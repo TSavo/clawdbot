@@ -257,8 +257,19 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     }
   }
   const mediaPayload = buildDiscordMediaPayload(mediaList);
+
+  // For threads, build session key with thread ID
+  let threadSessionKey: string | undefined;
+  if (threadChannel) {
+    threadSessionKey = buildAgentSessionKey({
+      agentId: route.agentId,
+      channel: route.channel,
+      peer: { kind: "channel", id: message.channelId },
+    });
+  }
+
   const threadKeys = resolveThreadSessionKeys({
-    baseSessionKey,
+    baseSessionKey: threadSessionKey ?? baseSessionKey,
     threadId: threadChannel ? message.channelId : undefined,
     parentSessionKey,
     useSuffix: false,
