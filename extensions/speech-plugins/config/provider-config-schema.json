@@ -1,0 +1,258 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://clawdbot.com/schemas/speech-plugin-config.json",
+  "title": "Speech Plugin Provider Configuration Schema",
+  "description": "Schema for voice provider plugin configurations supporting system, docker, and cloud deployment modes",
+  "type": "object",
+  "required": ["providers"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference"
+    },
+    "description": {
+      "type": "string",
+      "description": "Configuration file description"
+    },
+    "version": {
+      "type": "string",
+      "description": "Configuration version",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "providers": {
+      "type": "array",
+      "description": "Array of provider configurations",
+      "items": {
+        "$ref": "#/definitions/providerConfig"
+      }
+    },
+    "fallbackChains": {
+      "type": "object",
+      "description": "Fallback provider chains for resilience",
+      "properties": {
+        "stt": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "description": { "type": "string" },
+              "providers": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "comment": { "type": "string" }
+            }
+          }
+        },
+        "tts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "description": { "type": "string" },
+              "providers": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "comment": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "providerConfig": {
+      "type": "object",
+      "required": ["id", "type", "name", "module", "deployment"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique provider identifier",
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["stt", "tts"],
+          "description": "Provider type: speech-to-text or text-to-speech"
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable provider name"
+        },
+        "module": {
+          "type": "string",
+          "description": "Provider module path or npm package name"
+        },
+        "deployment": {
+          "$ref": "#/definitions/deploymentConfig"
+        },
+        "config": {
+          "type": "object",
+          "description": "Provider-specific configuration options"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether provider is enabled",
+          "default": true
+        },
+        "priority": {
+          "type": "integer",
+          "description": "Provider priority for fallback chains (higher = preferred)",
+          "minimum": 0,
+          "maximum": 1000,
+          "default": 100
+        },
+        "comment": {
+          "type": "string",
+          "description": "Optional comment for documentation"
+        }
+      }
+    },
+    "deploymentConfig": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["system", "docker", "cloud"],
+          "description": "Deployment mode: system (local binary), docker (containerized), or cloud (API)"
+        },
+        "system": {
+          "$ref": "#/definitions/systemDeployment"
+        },
+        "docker": {
+          "$ref": "#/definitions/dockerDeployment"
+        },
+        "cloud": {
+          "$ref": "#/definitions/cloudDeployment"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": { "mode": { "const": "system" } },
+          "required": ["system"]
+        },
+        {
+          "properties": { "mode": { "const": "docker" } },
+          "required": ["docker"]
+        },
+        {
+          "properties": { "mode": { "const": "cloud" } },
+          "required": ["cloud"]
+        }
+      ]
+    },
+    "systemDeployment": {
+      "type": "object",
+      "required": ["binaryPath"],
+      "description": "Configuration for local binary execution",
+      "properties": {
+        "binaryPath": {
+          "type": "string",
+          "description": "Path to binary executable (absolute or in PATH)"
+        },
+        "workingDir": {
+          "type": "string",
+          "description": "Working directory for binary execution"
+        },
+        "env": {
+          "type": "object",
+          "description": "Environment variables for binary execution",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "dockerDeployment": {
+      "type": "object",
+      "required": ["image", "tag"],
+      "description": "Configuration for Docker containerized execution",
+      "properties": {
+        "image": {
+          "type": "string",
+          "description": "Docker image name (e.g., ghcr.io/owner/repo)"
+        },
+        "tag": {
+          "type": "string",
+          "description": "Docker image tag (e.g., latest, v1.2.3)"
+        },
+        "containerName": {
+          "type": "string",
+          "description": "Optional container name for identification"
+        },
+        "volumes": {
+          "type": "array",
+          "description": "Volume mounts for persistent storage",
+          "items": {
+            "type": "object",
+            "required": ["host", "container"],
+            "properties": {
+              "host": {
+                "type": "string",
+                "description": "Host path (supports ${VAR} expansion)"
+              },
+              "container": {
+                "type": "string",
+                "description": "Container path"
+              }
+            }
+          }
+        },
+        "ports": {
+          "type": "array",
+          "description": "Port mappings for network access",
+          "items": {
+            "type": "object",
+            "required": ["host", "container"],
+            "properties": {
+              "host": {
+                "type": "integer",
+                "description": "Host port number",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "container": {
+                "type": "integer",
+                "description": "Container port number",
+                "minimum": 1,
+                "maximum": 65535
+              }
+            }
+          }
+        },
+        "env": {
+          "type": "object",
+          "description": "Environment variables for container",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "cloudDeployment": {
+      "type": "object",
+      "required": ["endpoint", "apiKey"],
+      "description": "Configuration for cloud API access",
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "format": "uri",
+          "description": "API endpoint URL"
+        },
+        "apiKey": {
+          "type": "string",
+          "description": "API key for authentication (supports ${VAR} expansion)"
+        },
+        "region": {
+          "type": "string",
+          "description": "Optional API region (e.g., us-west-2)"
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Request timeout in milliseconds",
+          "minimum": 1000,
+          "maximum": 300000,
+          "default": 30000
+        }
+      }
+    }
+  }
+}

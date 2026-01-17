@@ -1,0 +1,266 @@
+{
+  "$schema": "./provider-config-schema.json",
+  "description": "Example voice provider configurations showing all deployment modes",
+  "version": "1.0.0",
+  "providers": [
+    {
+      "id": "example-whisper-system",
+      "type": "stt",
+      "name": "Whisper (System Binary)",
+      "module": "@clawdbot/speech-plugins/providers/whisper",
+      "deployment": {
+        "mode": "system",
+        "system": {
+          "binaryPath": "/usr/local/bin/whisper",
+          "workingDir": "/var/tmp/whisper",
+          "env": {
+            "WHISPER_MODEL": "medium",
+            "WHISPER_DEVICE": "cuda"
+          }
+        }
+      },
+      "config": {
+        "model": "medium",
+        "language": "en",
+        "device": "cuda",
+        "computeType": "float16"
+      },
+      "enabled": true,
+      "priority": 100,
+      "comment": "System mode: Use local binary for privacy and offline operation"
+    },
+    {
+      "id": "example-faster-whisper-docker",
+      "type": "stt",
+      "name": "Faster-Whisper (Docker GPU)",
+      "module": "@clawdbot/speech-plugins/providers/faster-whisper",
+      "deployment": {
+        "mode": "docker",
+        "docker": {
+          "image": "ghcr.io/openai/faster-whisper",
+          "tag": "latest-gpu",
+          "containerName": "clawdbot-faster-whisper",
+          "volumes": [
+            {
+              "host": "/home/user/.cache/whisper",
+              "container": "/root/.cache/whisper"
+            },
+            {
+              "host": "/tmp/audio-input",
+              "container": "/audio"
+            }
+          ],
+          "env": {
+            "NVIDIA_VISIBLE_DEVICES": "all",
+            "CUDA_VISIBLE_DEVICES": "0"
+          }
+        }
+      },
+      "config": {
+        "model": "large-v2",
+        "language": "auto",
+        "device": "cuda",
+        "computeType": "float16",
+        "beam_size": 5
+      },
+      "enabled": false,
+      "priority": 95,
+      "comment": "Docker mode: Containerized execution with GPU acceleration"
+    },
+    {
+      "id": "example-deepgram-cloud",
+      "type": "stt",
+      "name": "Deepgram (Cloud API)",
+      "module": "@clawdbot/speech-plugins/providers/deepgram",
+      "deployment": {
+        "mode": "cloud",
+        "cloud": {
+          "endpoint": "https://api.deepgram.com/v1/listen",
+          "apiKey": "your-deepgram-api-key-here",
+          "region": "us-west-2",
+          "timeout": 30000
+        }
+      },
+      "config": {
+        "model": "nova-2",
+        "language": "en-US",
+        "punctuate": true,
+        "diarize": true,
+        "paragraphs": true,
+        "utterances": true,
+        "smartFormat": true,
+        "tier": "nova"
+      },
+      "enabled": false,
+      "priority": 110,
+      "comment": "Cloud mode: High-accuracy transcription with advanced features"
+    },
+    {
+      "id": "example-kokoro-system",
+      "type": "tts",
+      "name": "Kokoro TTS (System Binary)",
+      "module": "@clawdbot/speech-plugins/providers/kokoro",
+      "deployment": {
+        "mode": "system",
+        "system": {
+          "binaryPath": "/usr/local/bin/kokoro-tts",
+          "workingDir": "/var/tmp/kokoro",
+          "env": {
+            "KOKORO_VOICE_DIR": "/usr/local/share/kokoro/voices"
+          }
+        }
+      },
+      "config": {
+        "voice": "af_sky",
+        "sampleRate": 24000,
+        "format": "wav",
+        "speed": 1.0,
+        "pitch": 1.0,
+        "emotion": "neutral"
+      },
+      "enabled": true,
+      "priority": 100,
+      "comment": "System mode: Fast local synthesis with emotion control"
+    },
+    {
+      "id": "example-cartesia-cloud",
+      "type": "tts",
+      "name": "CartesiaAI (Cloud API)",
+      "module": "@clawdbot/speech-plugins/providers/cartesia",
+      "deployment": {
+        "mode": "cloud",
+        "cloud": {
+          "endpoint": "https://api.cartesia.ai/tts/bytes",
+          "apiKey": "your-cartesia-api-key-here",
+          "region": "us-east-1",
+          "timeout": 30000
+        }
+      },
+      "config": {
+        "modelId": "sonic-english",
+        "voiceId": "a0e99841-438c-4a64-b679-ae501e7d6091",
+        "outputFormat": {
+          "container": "wav",
+          "encoding": "pcm_s16le",
+          "sampleRate": 24000
+        },
+        "language": "en",
+        "speed": 1.0,
+        "emotion": "neutral"
+      },
+      "enabled": false,
+      "priority": 110,
+      "comment": "Cloud mode: Ultra-realistic voice synthesis with streaming"
+    },
+    {
+      "id": "example-elevenlabs-cloud",
+      "type": "tts",
+      "name": "ElevenLabs (Cloud API)",
+      "module": "@clawdbot/speech-plugins/providers/elevenlabs",
+      "deployment": {
+        "mode": "cloud",
+        "cloud": {
+          "endpoint": "https://api.elevenlabs.io/v1",
+          "apiKey": "your-elevenlabs-api-key-here",
+          "timeout": 30000
+        }
+      },
+      "config": {
+        "voiceId": "21m00Tcm4TlvDq8ikWAM",
+        "modelId": "eleven_multilingual_v2",
+        "voiceSettings": {
+          "stability": 0.5,
+          "similarityBoost": 0.75,
+          "style": 0.0,
+          "useSpeakerBoost": true
+        },
+        "outputFormat": "mp3_44100_128",
+        "optimizeStreamingLatency": 2
+      },
+      "enabled": false,
+      "priority": 105,
+      "comment": "Cloud mode: Premium voices with voice cloning support"
+    },
+    {
+      "id": "example-chatterbox-docker",
+      "type": "tts",
+      "name": "Chatterbox TTS (Docker)",
+      "module": "@clawdbot/speech-plugins/providers/chatterbox",
+      "deployment": {
+        "mode": "docker",
+        "docker": {
+          "image": "ghcr.io/chatterbox/tts",
+          "tag": "latest",
+          "containerName": "clawdbot-chatterbox-tts",
+          "ports": [
+            {
+              "host": 5002,
+              "container": 5002
+            }
+          ],
+          "volumes": [
+            {
+              "host": "/home/user/.cache/chatterbox/models",
+              "container": "/app/models"
+            }
+          ],
+          "env": {
+            "CHATTERBOX_MODEL": "vits-en-us",
+            "CHATTERBOX_DEVICE": "cpu"
+          }
+        }
+      },
+      "config": {
+        "voice": "en_US-amy-medium",
+        "sampleRate": 22050,
+        "format": "wav",
+        "speed": 1.0,
+        "lengthScale": 1.0,
+        "noiseScale": 0.667,
+        "noiseScaleW": 0.8
+      },
+      "enabled": false,
+      "priority": 95,
+      "comment": "Docker mode: Containerized VITS-based synthesis"
+    }
+  ],
+  "fallbackChains": {
+    "stt": [
+      {
+        "description": "High accuracy chain with cloud fallback",
+        "providers": ["example-deepgram-cloud", "example-faster-whisper-docker", "example-whisper-system"],
+        "comment": "Try cloud first, fall back to local GPU, then CPU"
+      }
+    ],
+    "tts": [
+      {
+        "description": "Premium quality chain with local fallback",
+        "providers": ["example-cartesia-cloud", "example-elevenlabs-cloud", "example-kokoro-system"],
+        "comment": "Try premium cloud, fall back to local"
+      }
+    ]
+  },
+  "deploymentModeGuide": {
+    "system": {
+      "description": "Local binary execution on the host machine",
+      "pros": ["Privacy", "No network dependency", "Low latency", "No API costs"],
+      "cons": ["Requires installation", "Limited by CPU/GPU", "Manual updates"],
+      "requirements": ["Binary in PATH or binaryPath", "Adequate CPU/GPU", "Storage for models"],
+      "useCases": ["Offline operation", "Privacy-sensitive data", "High-volume usage"]
+    },
+    "docker": {
+      "description": "Containerized execution with isolated environment",
+      "pros": ["Easy deployment", "Version control", "GPU acceleration", "Reproducible"],
+      "cons": ["Docker overhead", "Storage for images", "Container management"],
+      "requirements": ["Docker installed", "Docker daemon running", "Images pulled"],
+      "useCases": ["Development", "GPU workloads", "Microservices architecture"]
+    },
+    "cloud": {
+      "description": "Cloud API with managed infrastructure",
+      "pros": ["No setup", "Auto-scaling", "Latest models", "Professional support"],
+      "cons": ["API costs", "Network dependency", "Privacy concerns", "Rate limits"],
+      "requirements": ["API key", "Internet connection", "Account credit"],
+      "useCases": ["Low volume", "Prototyping", "Variable load", "Latest features"]
+    }
+  }
+}

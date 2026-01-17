@@ -1,0 +1,39 @@
+{
+  "name": "@clawdbot/speech-plugins",
+  "version": "0.1.0",
+  "description": "Pluggable STT/TTS provider system for Clawdbot",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "speech",
+    "stt",
+    "tts",
+    "transcription",
+    "synthesis",
+    "plugin",
+    "provider"
+  ],
+  "author": "Clawdbot Contributors",
+  "license": "MIT",
+  "devDependencies": {
+    "vitest": "^4.0.0"
+  },
+  "peerDependencies": {
+    "@clawdbot/core": "*"
+  }
+}
