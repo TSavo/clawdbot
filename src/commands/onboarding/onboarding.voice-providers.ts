@@ -22,6 +22,7 @@ import type {
   TTSProviderConfig,
 } from "../../config/zod-schema.voice-providers.js";
 import { detectBinary } from "../onboard-helpers.js";
+import { installVoiceProviderPlugin } from "../../../extensions/speech-plugins/src/plugin-installer.js";
 
 type ProviderTypeChoice = "system" | "docker" | "cloud";
 type STTModelChoice = "whisper" | "faster-whisper" | "openai";
@@ -496,6 +497,76 @@ async function showProviderSummary(
 }
 
 /**
+ * Initialize system mode deployment for voice providers
+ * Calls the plugin installer to automatically install ffmpeg, python3, and models
+ */
+async function initializeSystemModeDeployment(
+  prompter: WizardPrompter,
+  model: string,
+  deploymentConfig: Record<string, any>,
+  verbose = false,
+): Promise<boolean> {
+  try {
+    await prompter.note("Installing system dependencies (ffmpeg, python3, models)...", "Installing");
+
+    const result = await installVoiceProviderPlugin(
+      "system",
+      {
+        ...deploymentConfig,
+        model,
+      },
+      { verbose, cacheDir: process.env.XDG_CACHE_HOME || `${process.env.HOME}/.cache` },
+    );
+
+    if (result.success) {
+      const details = Object.entries(result.details)
+        .map(([key, value]) => `  ✓ ${key}: ${JSON.stringify(value)}`)
+        .join("\n");
+
+      await prompter.note(
+        [
+          "✓ System mode initialized successfully!",
+          "",
+          "Installed components:",
+          details,
+        ].join("\n"),
+        "Installation complete",
+      );
+      return true;
+    } else {
+      const errorMsg = result.error || "Unknown error during installation";
+      await prompter.note(
+        [
+          "⚠ System mode initialization failed:",
+          `  Error: ${errorMsg}`,
+          "",
+          "Fallback options:",
+          "  • Try installing ffmpeg and python3 manually",
+          "  • Use Docker mode for containerized deployment",
+          "  • Use Cloud mode with external API providers",
+        ].join("\n"),
+        "Installation failed",
+      );
+      return false;
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    await prompter.note(
+      [
+        "⚠ Error during system initialization:",
+        `  ${errorMsg}`,
+        "",
+        "Fallback options:",
+        "  • Try Docker mode for containerized deployment",
+        "  • Use Cloud mode with external API providers",
+      ].join("\n"),
+      "Installation error",
+    );
+    return false;
+  }
+}
+
+/**
  * Main voice provider onboarding function
  */
 export async function setupVoiceProviders(params: {
@@ -536,37 +607,61 @@ export async function setupVoiceProviders(params: {
     const sttType = await promptProviderType(prompter);
 
     if (sttType === "system") {
-      // Check for system-level dependencies
-      const sysDeps = await detectSystemDependencies(prompter);
-      const missing = [];
-      if (!sysDeps.hasFfmpeg) missing.push({ name: "ffmpeg", binaries: ["ffmpeg"] });
-      if (!sysDeps.hasPython3) missing.push({ name: "python3", binaries: ["python3"] });
-
-      if (missing.length > 0) {
-        await showSystemDependencyInstructions(prompter, missing);
-      }
-
-      // Get local model selection
+      // Get local model selection first
       const { model, modelSize, computeType, cpuThreads, beamSize } =
         await promptLocalSTTModel(prompter, capabilities);
 
-      if (model === "faster-whisper") {
-        sttConfig = {
-          type: "faster-whisper" as const,
-          deploymentMode: "system",
-          modelSize: modelSize as "tiny" | "small" | "base" | "medium" | "large",
-          language: "en",
-          computeType,
-          cpuThreads,
-          beamSize,
-        };
+      // Initialize system mode (install dependencies automatically)
+      const initSuccess = await initializeSystemModeDeployment(
+        prompter,
+        model === "faster-whisper" ? "faster-whisper" : "whisper",
+        { modelSize, computeType, cpuThreads, beamSize },
+        runtime.verbose,
+      );
+
+      if (initSuccess) {
+        if (model === "faster-whisper") {
+          sttConfig = {
+            type: "faster-whisper" as const,
+            deploymentMode: "system",
+            modelSize: modelSize as "tiny" | "small" | "base" | "medium" | "large",
+            language: "en",
+            computeType,
+            cpuThreads,
+            beamSize,
+          };
+        } else {
+          sttConfig = {
+            type: "whisper" as const,
+            deploymentMode: "system",
+            modelSize: modelSize as "tiny" | "small" | "base" | "medium" | "large",
+            language: "en",
+          };
+        }
       } else {
-        sttConfig = {
-          type: "whisper" as const,
-          deploymentMode: "system",
-          modelSize: modelSize as "tiny" | "small" | "base" | "medium" | "large",
-          language: "en",
-        };
+        // Installation failed - offer fallback to Docker or Cloud
+        const fallback = await prompter.confirm({
+          message: "Try different deployment mode?",
+          initialValue: true,
+        });
+
+        if (fallback) {
+          const fallbackType = await promptProviderType(prompter);
+          if (fallbackType === "docker") {
+            const { dockerImage, basePort } = await promptDockerConfiguration(prompter, "stt");
+            const dockerModel = dockerImage.split(":")[0]?.toLowerCase() || "whisper";
+            sttConfig = {
+              type: dockerModel === "faster-whisper" ? "faster-whisper" : "whisper",
+              deploymentMode: "docker",
+              dockerImage,
+              dockerPort: basePort,
+              modelSize: "small",
+              language: "en",
+            } as unknown as STTProviderConfig;
+          } else {
+            sttConfig = await promptCloudSTTProvider(prompter);
+          }
+        }
       }
     } else if (sttType === "docker") {
       // Docker configuration
@@ -597,23 +692,47 @@ export async function setupVoiceProviders(params: {
     const ttsType = await promptProviderType(prompter);
 
     if (ttsType === "system") {
-      // Check for system-level dependencies
-      const sysDeps = await detectSystemDependencies(prompter);
-      const missing = [];
-      if (!sysDeps.hasFfmpeg) missing.push({ name: "ffmpeg", binaries: ["ffmpeg"] });
-      if (!sysDeps.hasPython3) missing.push({ name: "python3", binaries: ["python3"] });
-
-      if (missing.length > 0) {
-        await showSystemDependencyInstructions(prompter, missing);
-      }
-
-      // Get local model selection
+      // Get local model selection first
       const { model, voice } = await promptLocalTTSModel(prompter, capabilities);
-      ttsConfig = {
-        type: "local",
+
+      // Initialize system mode (install dependencies automatically)
+      const initSuccess = await initializeSystemModeDeployment(
+        prompter,
         model,
-        voice,
-      };
+        { voice },
+        runtime.verbose,
+      );
+
+      if (initSuccess) {
+        ttsConfig = {
+          type: "local",
+          model,
+          voice,
+        };
+      } else {
+        // Installation failed - offer fallback to Docker or Cloud
+        const fallback = await prompter.confirm({
+          message: "Try different deployment mode?",
+          initialValue: true,
+        });
+
+        if (fallback) {
+          const fallbackType = await promptProviderType(prompter);
+          if (fallbackType === "docker") {
+            const { dockerImage, basePort } = await promptDockerConfiguration(prompter, "tts");
+            ttsConfig = {
+              type: "local",
+              model: dockerImage.split(":")[0] || "kokoro",
+              voice: undefined,
+            };
+            (ttsConfig as any).deploymentMode = "docker";
+            (ttsConfig as any).dockerImage = dockerImage;
+            (ttsConfig as any).dockerPort = basePort;
+          } else {
+            ttsConfig = await promptCloudTTSProvider(prompter);
+          }
+        }
+      }
     } else if (ttsType === "docker") {
       // Docker configuration
       const { dockerImage, basePort } = await promptDockerConfiguration(prompter, "tts");
