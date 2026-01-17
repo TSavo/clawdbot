@@ -25,6 +25,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY ui/package.json ./ui/package.json
 COPY patches ./patches
 COPY scripts ./scripts
+COPY extensions ./extensions
 
 RUN pnpm install
 
@@ -37,6 +38,13 @@ RUN if [ -d "extensions/speech-plugins" ]; then \
     fi
 
 RUN pnpm build
+
+# Build workspace packages (extensions)
+RUN if [ -d "extensions/speech-plugins" ]; then \
+      echo "Building speech-plugins extension..."; \
+      cd extensions/speech-plugins && pnpm build && cd ../../; \
+    fi
+
 RUN pnpm ui:install
 RUN pnpm ui:build
 
