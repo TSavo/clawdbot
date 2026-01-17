@@ -265,8 +265,8 @@ describe('Cloud Mode Integration Tests', () => {
     it('should warn when approaching quota limit', async () => {
       const mockWarning = vi.fn().mockResolvedValue({
         quotaLimit: 10000,
-        quotaUsed: 9000,
-        quotaRemaining: 1000,
+        quotaUsed: 9100,
+        quotaRemaining: 900,
         warningThreshold: 0.9,
         shouldWarn: true,
       });
@@ -411,15 +411,20 @@ describe('Cloud Mode Integration Tests', () => {
       const maxRetries = 3;
 
       try {
-        for (let i = 0; i < maxRetries + 1; i++) {
+        for (let i = 0; i <= maxRetries; i++) {
           attempts++;
-          await mockMaxRetries();
+          try {
+            await mockMaxRetries();
+          } catch {
+            // Retry on error, continue loop
+          }
         }
       } catch (e) {
-        // Expected after max retries
+        // Unexpected error
       }
 
       expect(attempts).toBe(maxRetries + 1);
+      expect(mockMaxRetries).toHaveBeenCalledTimes(maxRetries + 1);
     });
   });
 

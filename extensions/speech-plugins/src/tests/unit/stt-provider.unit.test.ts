@@ -147,9 +147,8 @@ describe('STT Provider Unit Tests', () => {
 
     it('should fail gracefully with invalid audio data', async () => {
       const provider = createErrorSTTProvider('test-provider', 'Invalid audio format');
-      await provider.initialize();
 
-      await expect(provider.transcribe(Buffer.from([0, 0, 0, 0]))).rejects.toThrow();
+      await expect(provider.transcribe(Buffer.from([0, 0, 0, 0]))).rejects.toThrow('Invalid audio format');
     });
   });
 
@@ -219,7 +218,6 @@ describe('STT Provider Unit Tests', () => {
 
     it('should call onError callback on transcription failure', async () => {
       const provider = createErrorSTTProvider('test-provider', 'Stream transcription failed');
-      await provider.initialize();
 
       if (!provider.metadata.capabilities.supportsStreaming) {
         return;

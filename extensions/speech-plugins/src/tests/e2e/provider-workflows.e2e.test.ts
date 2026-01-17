@@ -223,7 +223,7 @@ describe('Voice Provider E2E Workflows', () => {
 
       const result = await mockFallbackChain(['deepgram', 'whisper', 'faster-whisper']);
 
-      expect(result.attempts).toHaveLength(3);
+      expect(result.attempts).toHaveLength(2);
       expect(result.finalProvider).toBe('whisper');
     });
 

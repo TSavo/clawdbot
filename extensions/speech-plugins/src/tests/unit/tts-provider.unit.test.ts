@@ -343,7 +343,6 @@ describe('TTS Provider Unit Tests', () => {
 
     it('should handle stream errors gracefully', async () => {
       const provider = createErrorTTSProvider('test-provider', 'Stream error');
-      await provider.initialize();
 
       if (!provider.metadata.capabilities.supportsStreaming) {
         return;
