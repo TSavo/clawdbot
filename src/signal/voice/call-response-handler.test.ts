@@ -401,14 +401,8 @@ describe('SignalVoiceCallResponseHandler', () => {
     });
 
     it('should emit audio sent events', async () => {
-      const audioSentPromise = new Promise<any>((resolve) => {
-        handler.on('audio:sent', (chunk) => {
-          resolve(chunk);
-        });
-      });
-
-      // Enable agent to trigger audio sending
-      handler = new SignalVoiceCallResponseHandler(
+      // Create new handler with agent enabled to trigger audio sending
+      const agentHandler = new SignalVoiceCallResponseHandler(
         rpcOptions,
         {
           enableTranscription: true,
@@ -417,9 +411,21 @@ describe('SignalVoiceCallResponseHandler', () => {
         mockRuntime,
       );
 
-      await handler.initialize({
+      await agentHandler.initialize({
         transcriptionProvider: mockTranscriptionProvider,
         ttsProvider: mockTtsProvider,
+      });
+
+      // Set up listener on the correct handler instance
+      const audioSentPromise = new Promise<any>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('audio:sent event timeout'));
+        }, 10000);
+
+        agentHandler.on('audio:sent', (chunk) => {
+          clearTimeout(timeout);
+          resolve(chunk);
+        });
       });
 
       vi.mocked(signalRpcRequest)
@@ -434,14 +440,15 @@ describe('SignalVoiceCallResponseHandler', () => {
         })
         .mockResolvedValue({}); // sendCallAudio
 
-      const streamPromise = handler.startStreaming(mockCall, 'stream-123');
+      const streamPromise = agentHandler.startStreaming(mockCall, 'stream-123');
 
       const sentChunk = await audioSentPromise;
       expect(sentChunk).toBeDefined();
       expect(sentChunk.format).toBe('opus');
 
-      await handler.stopStreaming();
+      await agentHandler.stopStreaming();
       await streamPromise;
+      await agentHandler.cleanup();
     });
   });
 
@@ -462,13 +469,8 @@ describe('SignalVoiceCallResponseHandler', () => {
     });
 
     it('should track latency metrics', async () => {
-      const latencyPromise = new Promise<[number, string]>((resolve) => {
-        handler.on('latency:measured', (latencyMs, stage) => {
-          resolve([latencyMs, stage]);
-        });
-      });
-
-      handler = new SignalVoiceCallResponseHandler(
+      // Create handler with transcription enabled to generate latency events
+      const latencyHandler = new SignalVoiceCallResponseHandler(
         rpcOptions,
         {
           enableTranscription: true,
@@ -477,9 +479,21 @@ describe('SignalVoiceCallResponseHandler', () => {
         mockRuntime,
       );
 
-      await handler.initialize({
+      await latencyHandler.initialize({
         transcriptionProvider: mockTranscriptionProvider,
         ttsProvider: mockTtsProvider,
+      });
+
+      // Set up listener on the correct handler instance
+      const latencyPromise = new Promise<[number, string]>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('latency:measured event timeout'));
+        }, 10000);
+
+        latencyHandler.on('latency:measured', (latencyMs, stage) => {
+          clearTimeout(timeout);
+          resolve([latencyMs, stage]);
+        });
       });
 
       vi.mocked(signalRpcRequest).mockResolvedValueOnce({
@@ -492,14 +506,15 @@ describe('SignalVoiceCallResponseHandler', () => {
         hasMore: false,
       });
 
-      const streamPromise = handler.startStreaming(mockCall, 'stream-123');
+      const streamPromise = latencyHandler.startStreaming(mockCall, 'stream-123');
 
       const [latencyMs, stage] = await latencyPromise;
       expect(latencyMs).toBeGreaterThanOrEqual(0);
       expect(stage).toBeTruthy();
 
-      await handler.stopStreaming();
+      await latencyHandler.stopStreaming();
       await streamPromise;
+      await latencyHandler.cleanup();
     });
 
     it('should calculate average latency', async () => {
