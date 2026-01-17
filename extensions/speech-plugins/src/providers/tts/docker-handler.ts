@@ -20,26 +20,29 @@ import { execSync, spawn } from 'node:child_process';
 /**
  * Docker image definitions for local TTS providers
  * Cloud-only providers (ElevenLabs, CartesiaAI) use cloud mode exclusively
+ *
+ * containerPort: Fixed internal container port used in the container
+ * Docker dynamically assigns host ports via -p 0:containerPort
  */
 export const TTS_DOCKER_IMAGES = {
   kokoro: {
     image: 'kokoro:latest',
     fallback: 'python:3.11-slim',
-    port: 8000,
+    containerPort: 8000,
     volumeDir: '.cache/kokoro',
     healthCheck: '/health',
   },
   piper: {
     image: 'piper:latest',
     fallback: 'python:3.11-slim',
-    port: 8001,
+    containerPort: 8001,
     volumeDir: '.cache/piper',
     healthCheck: '/health',
   },
   chatterbox: {
     image: 'chatterbox:latest',
     fallback: 'python:3.11-slim',
-    port: 8002,
+    containerPort: 8002,
     volumeDir: '.cache/chatterbox',
     healthCheck: '/health',
   },
@@ -51,7 +54,8 @@ export const TTS_DOCKER_IMAGES = {
 export interface ContainerHealthStatus {
   running: boolean;
   healthy: boolean;
-  port: number;
+  containerPort: number;  // Internal container port (fixed)
+  assignedPort?: number;  // Dynamically assigned host port (null if not running)
   containerId?: string;
   lastCheck: Date;
   error?: string;
@@ -83,6 +87,35 @@ export function isDockerAvailable(): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Get the dynamically assigned host port for a container's internal port
+ * Uses `docker port <containerId> <containerPort>/tcp`
+ * Returns the host port that Docker assigned (e.g., 45123 from "0.0.0.0:45123")
+ */
+export function getAssignedPort(
+  containerId: string,
+  containerPort: number,
+): number | null {
+  try {
+    const portOutput = execSync(
+      `docker port ${containerId} ${containerPort}/tcp`,
+      { encoding: 'utf-8', stdio: 'pipe' as any, shell: true } as any,
+    ).trim();
+
+    // Output format: "0.0.0.0:ASSIGNED_PORT"
+    const portMatch = portOutput.match(/:(\d+)$/);
+    if (portMatch && portMatch[1]) {
+      const port = parseInt(portMatch[1], 10);
+      if (!Number.isNaN(port)) {
+        return port;
+      }
+    }
+  } catch {
+    // Container might not exist or port not mapped
+  }
+  return null;
 }
 
 /**
@@ -135,7 +168,7 @@ export async function startTTSContainer(
     return {
       running: false,
       healthy: false,
-      port: TTS_DOCKER_IMAGES[provider].port,
+      containerPort: TTS_DOCKER_IMAGES[provider].containerPort,
       lastCheck: new Date(),
       error: 'Docker is not available',
     };
@@ -143,11 +176,11 @@ export async function startTTSContainer(
 
   const providerConfig = TTS_DOCKER_IMAGES[provider];
   const image = config?.image || providerConfig.image;
-  const port = config?.port || providerConfig.port;
+  const containerPort = (providerConfig as any).containerPort || config?.containerPort || 8000;
   const volumePath = createVolumeDirectory(provider);
 
   if (verbose) {
-    console.log(`Starting ${provider} container on port ${port}`);
+    console.log(`Starting ${provider} container on container port ${containerPort}`);
   }
 
   try {
@@ -165,17 +198,21 @@ export async function startTTSContainer(
       if (verbose) {
         console.log(`Container ${provider}-tts is already running`);
       }
+      // Get dynamically assigned host port
+      const assignedPort = getAssignedPort(runningContainers, containerPort);
       return {
         running: true,
         healthy: true,
-        port,
+        containerPort,
+        assignedPort: assignedPort || undefined,
         containerId: runningContainers,
         lastCheck: new Date(),
       };
     }
 
-    // Build docker run command
-    let dockerCmd = `docker run -d --name ${provider}-tts -p ${port}:3000 -v ${volumePath}:/app/data`;
+    // Build docker run command with dynamic port assignment
+    // Use -p 0:CONTAINERPORT to let Docker choose available port for internal container port
+    let dockerCmd = `docker run -d --name ${provider}-tts -p 0:${containerPort} -v ${volumePath}:/app/data`;
 
     // Add resource limits if specified
     if (config?.resourceLimits) {
@@ -193,8 +230,8 @@ export async function startTTSContainer(
       dockerCmd += ` -e ${key}="${value}"`;
     }
 
-    // Add health check
-    dockerCmd += ` --health-cmd="curl -f http://localhost:3000${providerConfig.healthCheck} || exit 1"`;
+    // Add health check (uses internal container port)
+    dockerCmd += ` --health-cmd="curl -f http://localhost:${containerPort}${providerConfig.healthCheck} || exit 1"`;
     dockerCmd += ` --health-interval=10s --health-timeout=5s --health-retries=3`;
 
     // Add image (prefer specific image over fallback)
@@ -214,10 +251,19 @@ export async function startTTSContainer(
       console.log(`✓ Container started: ${containerId}`);
     }
 
+    // Get the dynamically assigned host port
+    const assignedPort = getAssignedPort(containerId, containerPort);
+    if (verbose && assignedPort) {
+      console.log(
+        `  Container port ${containerPort} mapped to host port ${assignedPort}`,
+      );
+    }
+
     return {
       running: true,
       healthy: true,
-      port,
+      containerPort,
+      assignedPort: assignedPort || undefined,
       containerId,
       lastCheck: new Date(),
     };
@@ -230,7 +276,7 @@ export async function startTTSContainer(
     return {
       running: false,
       healthy: false,
-      port,
+      containerPort,
       lastCheck: new Date(),
       error: errorMsg,
     };
@@ -284,7 +330,7 @@ export async function checkTTSContainerHealth(
   verbose = false,
 ): Promise<ContainerHealthStatus> {
   const providerConfig = TTS_DOCKER_IMAGES[provider];
-  const port = providerConfig.port;
+  const containerPort = providerConfig.containerPort;
 
   try {
     // Check if Docker is available
@@ -292,7 +338,7 @@ export async function checkTTSContainerHealth(
       return {
         running: false,
         healthy: false,
-        port,
+        containerPort,
         lastCheck: new Date(),
         error: 'Docker is not available',
       };
@@ -317,7 +363,7 @@ export async function checkTTSContainerHealth(
       return {
         running: false,
         healthy: false,
-        port,
+        containerPort,
         lastCheck: new Date(),
       };
     }
@@ -336,12 +382,17 @@ export async function checkTTSContainerHealth(
       containerId = '';
     }
 
+    // Get assigned host port for health check
+    const assignedPort = getAssignedPort(containerId, containerPort);
+
     // Check health endpoint
     let isHealthy = false;
     try {
-      const healthCmd = `curl -sf http://localhost:${port}${providerConfig.healthCheck}`;
-      execSync(healthCmd, { stdio: ['ignore', 'ignore', 'ignore'] as const, shell: true } as any);
-      isHealthy = true;
+      if (assignedPort) {
+        const healthCmd = `curl -sf http://localhost:${assignedPort}${providerConfig.healthCheck}`;
+        execSync(healthCmd, { stdio: ['ignore', 'ignore', 'ignore'] as const, shell: true } as any);
+        isHealthy = true;
+      }
     } catch {
       isHealthy = false;
     }
@@ -349,7 +400,8 @@ export async function checkTTSContainerHealth(
     return {
       running: true,
       healthy: isHealthy,
-      port,
+      containerPort,
+      assignedPort: assignedPort || undefined,
       containerId,
       lastCheck: new Date(),
     };
@@ -357,7 +409,7 @@ export async function checkTTSContainerHealth(
     return {
       running: false,
       healthy: false,
-      port,
+      containerPort,
       lastCheck: new Date(),
       error: error instanceof Error ? error.message : String(error),
     };
@@ -373,7 +425,8 @@ export async function initializeTTSDockerMode(
   verbose = false,
 ): Promise<{
   success: boolean;
-  port: number;
+  containerPort: number;
+  assignedPort?: number;
   volumePath: string;
   containerId?: string;
   error?: string;
@@ -381,7 +434,7 @@ export async function initializeTTSDockerMode(
   if (!isDockerAvailable()) {
     return {
       success: false,
-      port: TTS_DOCKER_IMAGES[provider].port,
+      containerPort: TTS_DOCKER_IMAGES[provider].containerPort,
       volumePath: '',
       error: 'Docker is not available. Install Docker and try again.',
     };
@@ -407,7 +460,7 @@ export async function initializeTTSDockerMode(
     if (!health.running) {
       return {
         success: false,
-        port: health.port,
+        containerPort: health.containerPort,
         volumePath,
         error: health.error || 'Failed to start container',
       };
@@ -415,7 +468,8 @@ export async function initializeTTSDockerMode(
 
     return {
       success: true,
-      port: health.port,
+      containerPort: health.containerPort,
+      assignedPort: health.assignedPort,
       volumePath,
       containerId: health.containerId,
     };
@@ -427,7 +481,7 @@ export async function initializeTTSDockerMode(
 
     return {
       success: false,
-      port: TTS_DOCKER_IMAGES[provider].port,
+      containerPort: TTS_DOCKER_IMAGES[provider].containerPort,
       volumePath: '',
       error: errorMsg,
     };
@@ -441,7 +495,8 @@ export async function getRunningTTSContainers(): Promise<
   Array<{
     provider: keyof typeof TTS_DOCKER_IMAGES;
     containerId: string;
-    port: number;
+    containerPort: number;
+    assignedPort?: number;
     healthy: boolean;
   }>
 > {
@@ -452,7 +507,8 @@ export async function getRunningTTSContainers(): Promise<
   const containers: Array<{
     provider: keyof typeof TTS_DOCKER_IMAGES;
     containerId: string;
-    port: number;
+    containerPort: number;
+    assignedPort?: number;
     healthy: boolean;
   }> = [];
 
@@ -462,7 +518,8 @@ export async function getRunningTTSContainers(): Promise<
       containers.push({
         provider,
         containerId: health.containerId,
-        port: health.port,
+        containerPort: health.containerPort,
+        assignedPort: health.assignedPort,
         healthy: health.healthy,
       });
     }
