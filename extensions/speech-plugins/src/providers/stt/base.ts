@@ -21,20 +21,36 @@ import type {
   ProviderCapabilities,
 } from '@media/voice-providers/executor.js';
 import type { DeploymentConfig } from '@config/deployment-config.types.js';
+import type { SystemModeConfig } from './system-mode.js';
+import {
+  initializeSystemMode,
+  validateSystemModeConfig,
+  getProviderDependencies,
+} from './system-mode.js';
 
 /**
  * Base class for STT plugin wrappers
  *
  * Bridges the gap between executor implementations and the STTProvider interface.
+ * Supports system mode initialization with automatic dependency detection and installation.
  */
 export abstract class BaseSTTPlugin implements STTProvider {
   abstract readonly metadata: STTProviderMetadata;
   protected executor: VoiceProviderExecutor | null = null;
   protected deploymentConfig?: DeploymentConfig;
+  protected systemModeConfig?: SystemModeConfig;
   protected initialized = false;
 
   constructor(deploymentConfig?: DeploymentConfig) {
     this.deploymentConfig = deploymentConfig;
+  }
+
+  /**
+   * Get the provider name for system mode initialization
+   * Subclasses should override this to provide their provider name
+   */
+  protected getSystemModeProviderName(): string {
+    return this.metadata.id.replace('-stt', '');
   }
 
   /**
@@ -57,6 +73,60 @@ export abstract class BaseSTTPlugin implements STTProvider {
       languages: executorCaps.supportedLanguages,
       maxDurationSeconds: null, // Unlimited by default
     };
+  }
+
+  /**
+   * Initialize system mode for the provider
+   * Automatically detects and installs dependencies, sets up model cache
+   */
+  async initializeSystemMode(
+    config?: SystemModeConfig,
+    verbose = false,
+  ): Promise<{ success: boolean; config: SystemModeConfig; error?: string }> {
+    const providerName = this.getSystemModeProviderName();
+
+    const result = await initializeSystemMode(providerName, config, verbose);
+
+    if (result.success) {
+      this.systemModeConfig = result.config;
+      // Merge system mode config with deployment config
+      if (!this.deploymentConfig) {
+        this.deploymentConfig = { mode: 'system', ...result.config } as any;
+      } else {
+        this.deploymentConfig = {
+          ...this.deploymentConfig,
+          ...result.config,
+        };
+      }
+    }
+
+    return {
+      success: result.success,
+      config: result.config,
+      error: result.error,
+    };
+  }
+
+  /**
+   * Validate system mode configuration
+   */
+  validateSystemModeConfig(config: SystemModeConfig): { valid: boolean; errors: string[] } {
+    return validateSystemModeConfig(config);
+  }
+
+  /**
+   * Get system mode dependencies for this provider
+   */
+  getSystemModeDependencies(): { binaries: string[]; packages: Record<string, string[]>; pipPackages?: string[] } | null {
+    const providerName = this.getSystemModeProviderName();
+    const deps = getProviderDependencies(providerName);
+    return deps
+      ? {
+          binaries: deps.binaries,
+          packages: deps.packages,
+          pipPackages: deps.pipPackages,
+        }
+      : null;
   }
 
   /**

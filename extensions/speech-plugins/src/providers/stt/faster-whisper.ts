@@ -3,6 +3,13 @@
  *
  * Wraps the FasterWhisperExecutor to conform to the STTProvider interface.
  * Optimized Whisper implementation with GPU support and compute type selection.
+ *
+ * System Mode Features:
+ * - GPU acceleration (CUDA, MPS, ROCm) auto-detection
+ * - Compute type optimization (int8, float16, float32)
+ * - CPU thread configuration
+ * - Beam search tuning
+ * - Cross-platform installation via package managers
  */
 
 import { BaseSTTPlugin } from './base.js';

@@ -3,6 +3,12 @@
  *
  * Wraps the WhisperExecutor to conform to the STTProvider interface.
  * Supports Docker and System deployment modes.
+ *
+ * System Mode Features:
+ * - Automatic ffmpeg and python3 detection/installation
+ * - OpenAI Whisper package management
+ * - CPU/GPU support with model caching
+ * - Cross-platform package manager support (brew, apt, choco)
  */
 
 import { BaseSTTPlugin } from './base.js';
@@ -29,7 +35,7 @@ export class WhisperSTTPlugin extends BaseSTTPlugin {
     this.metadata = {
       id: 'whisper-stt',
       name: 'Whisper',
-      description: 'OpenAI Whisper speech-to-text model with Docker and system deployment support',
+      description: 'OpenAI Whisper speech-to-text model with system, Docker, and cloud deployment support',
       version: '1.0.0',
       capabilities: this.getWhisperCapabilities(),
       configSchema: {
@@ -41,10 +47,10 @@ export class WhisperSTTPlugin extends BaseSTTPlugin {
 
           const cfg = config as Record<string, unknown>;
 
-          if (cfg.mode && !['docker', 'system'].includes(cfg.mode as string)) {
+          if (cfg.mode && !['docker', 'system', 'cloud'].includes(cfg.mode as string)) {
             return {
               ok: false,
-              errors: ['mode must be "docker" or "system"'],
+              errors: ['mode must be "docker", "system", or "cloud"'],
             };
           }
 
@@ -53,7 +59,7 @@ export class WhisperSTTPlugin extends BaseSTTPlugin {
         properties: {
           mode: {
             type: 'string',
-            description: 'Deployment mode: docker or system',
+            description: 'Deployment mode: system (local), docker (containerized), or cloud (external)',
           },
           modelSize: {
             type: 'string',
@@ -62,6 +68,10 @@ export class WhisperSTTPlugin extends BaseSTTPlugin {
           language: {
             type: 'string',
             description: 'Default language for transcription (ISO 639-1 code)',
+          },
+          device: {
+            type: 'string',
+            description: 'Device for inference: auto, cpu, cuda, mps, rocm (system mode only)',
           },
           dockerPort: {
             type: 'number',
@@ -77,7 +87,7 @@ export class WhisperSTTPlugin extends BaseSTTPlugin {
           },
           cachePath: {
             type: 'string',
-            description: 'Model cache directory path',
+            description: 'Model cache directory path (default: ~/.cache/stt-models)',
           },
         },
       },

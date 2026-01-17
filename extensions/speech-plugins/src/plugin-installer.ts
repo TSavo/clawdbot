@@ -286,6 +286,15 @@ async function initializeSystemMode(
 /**
  * Initialize Docker mode deployment
  * Pulls images and creates containers with proper port mapping and health checks
+ *
+ * Port allocation:
+ * - 8000: Kokoro (local TTS)
+ * - 8001: Piper (fast offline TTS)
+ * - 8002: Chatterbox (multi-mode TTS)
+ * - 8003+: STT providers (Whisper, Faster-Whisper)
+ *
+ * Cloud-only providers (Deepgram, ElevenLabs, CartesiaAI) are not containerized
+ * and only available through cloud mode with API keys.
  */
 async function initializeDockerMode(
   config: Partial<DeploymentConfig>,
@@ -318,60 +327,84 @@ async function initializeDockerMode(
 
     details.docker = 'available';
 
-    // Define provider images
+    // Define provider images with port allocation
+    // Note: Cloud-only providers (Deepgram, ElevenLabs, CartesiaAI) use cloud mode only
     const providerImages = {
-      whisper: 'openai/whisper:latest',
-      kokoro: 'kokoro:latest',
-      faster_whisper: 'faster-whisper:latest',
+      // Local TTS Providers (ports 8000-8002)
+      kokoro: { image: 'kokoro:latest', port: 8000 },
+      piper: { image: 'piper:latest', port: 8001 },
+      chatterbox: { image: 'chatterbox:latest', port: 8002 },
+      // Local STT Providers (ports 8003+)
+      whisper: { image: 'openai/whisper:latest', port: 8003 },
+      faster_whisper: { image: 'faster-whisper:latest', port: 8004 },
     };
 
     // Pull images
-    for (const [provider, image] of Object.entries(providerImages)) {
+    for (const [provider, config] of Object.entries(providerImages)) {
       if (verbose) {
-        console.log(`Pulling image for ${provider}: ${image}`);
+        console.log(`Pulling image for ${provider}: ${config.image}`);
       }
 
       try {
-        execSync(`docker pull ${image}`, { stdio: ['inherit', 'inherit', 'inherit'] as const });
+        execSync(`docker pull ${config.image}`, { stdio: ['inherit', 'inherit', 'inherit'] as const });
         details[`${provider}_image`] = 'pulled';
+        details[`${provider}_port`] = config.port;
       } catch (error) {
         if (verbose) {
-          console.warn(`Warning: Could not pull ${image}`);
+          console.warn(`Warning: Could not pull ${config.image}`);
         }
         details[`${provider}_image`] = 'pull_failed';
+        details[`${provider}_port`] = config.port;
       }
     }
 
-    // Setup port allocation
+    // Setup port allocation mapping
     const portMapping: Record<string, number> = {};
-    const startPort = 8000;
-    let currentPort = startPort;
-
-    for (const provider of Object.keys(providerImages)) {
-      portMapping[provider] = currentPort;
-      currentPort += 1;
+    for (const [provider, config] of Object.entries(providerImages)) {
+      portMapping[provider] = config.port;
     }
 
     details.portMapping = portMapping;
+    details.ttsPortRange = '8000-8002';
+    details.sttPortRange = '8003-8004';
 
-    // Setup volumes for model caching
+    // Setup volumes for model caching (local providers only)
     const homeDir = os.homedir();
-    const whisperVolume = path.join(homeDir, '.cache', 'whisper');
-    const kokoroVolume = path.join(homeDir, '.cache', 'kokoro');
+    const volumePaths: Record<string, string> = {};
 
-    [whisperVolume, kokoroVolume].forEach((vol) => {
-      if (!fs.existsSync(vol)) {
-        fs.mkdirSync(vol, { recursive: true });
+    // Only cache local providers (cloud-only excluded)
+    const providers = ['whisper', 'faster_whisper', 'kokoro', 'piper', 'chatterbox'];
+    for (const provider of providers) {
+      const volPath = path.join(homeDir, '.cache', provider);
+      if (!fs.existsSync(volPath)) {
+        fs.mkdirSync(volPath, { recursive: true });
       }
-    });
+      volumePaths[provider] = volPath;
+    }
 
-    details.volumes = {
-      whisper: whisperVolume,
-      kokoro: kokoroVolume,
+    details.volumes = volumePaths;
+
+    // Document health check endpoints (local providers only)
+    details.healthCheckEndpoints = {
+      kokoro: 'http://localhost:8000/health',
+      piper: 'http://localhost:8001/health',
+      chatterbox: 'http://localhost:8002/health',
+      whisper: 'http://localhost:8003/health',
+      faster_whisper: 'http://localhost:8004/health',
     };
 
     if (verbose) {
       console.log('✓ Docker mode initialization complete');
+      console.log('\nPort Allocation Summary:');
+      console.log('  TTS Providers:');
+      console.log('    - Kokoro: 8000');
+      console.log('    - Piper: 8001');
+      console.log('    - ElevenLabs: 8002');
+      console.log('    - CartesiaAI: 8003');
+      console.log('    - Chatterbox: 8004');
+      console.log('  STT Providers:');
+      console.log('    - Whisper: 8005');
+      console.log('    - Faster-Whisper: 8006');
     }
 
     return {

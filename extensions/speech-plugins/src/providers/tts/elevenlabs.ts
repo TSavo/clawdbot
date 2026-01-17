@@ -13,6 +13,13 @@ import type {
 
 import { BaseTTSPlugin } from './base.js';
 import { ElevenLabsExecutor } from '@media/voice-providers/tts-elevenlabs.js';
+import { CloudCredentialManager, getCredentialManager } from '../cloud-credential-manager.js';
+import {
+  createStreamHandler,
+  type StreamConfig,
+  type BaseStreamHandler,
+} from '../cloud-stream-handlers.js';
+import { CloudRateLimiter, DEFAULT_CONFIGS } from '../cloud-rate-limiter.js';
 
 /**
  * ElevenLabs TTS configuration
@@ -31,6 +38,9 @@ export interface ElevenLabsTTSConfig {
  */
 export class ElevenLabsTTSPlugin extends BaseTTSPlugin {
   readonly metadata: TTSProviderMetadata;
+  private cloudCredentialManager: CloudCredentialManager | null = null;
+  private rateLimiter: CloudRateLimiter | null = null;
+  private streamHandler: BaseStreamHandler | null = null;
 
   constructor(private config: ElevenLabsTTSConfig) {
     super();
@@ -144,5 +154,113 @@ export class ElevenLabsTTSPlugin extends BaseTTSPlugin {
     }
 
     return this.metadata.capabilities.voices;
+  }
+
+  /**
+   * Initialize cloud mode with credential management and rate limiting
+   *
+   * Cloud mode features:
+   * - REST API streaming for voice synthesis
+   * - Secure credential storage
+   * - Automatic rate limiting
+   * - Dynamic voice library loading
+   */
+  async initializeCloudMode(config?: {
+    apiKey?: string;
+    endpoint?: string;
+  }): Promise<void> {
+    // Get credential manager
+    this.cloudCredentialManager = await getCredentialManager();
+
+    // Store or retrieve credentials
+    const apiKey =
+      config?.apiKey ||
+      process.env.ELEVENLABS_API_KEY ||
+      (await this.cloudCredentialManager.getCredential('elevenlabs'))?.apiKey;
+
+    if (!apiKey) {
+      throw new Error(
+        'ElevenLabs API key not found. Set ELEVENLABS_API_KEY environment variable or provide it in config.',
+      );
+    }
+
+    // Validate credential
+    const validation = await this.cloudCredentialManager.validateCredential('elevenlabs', {
+      provider: 'elevenlabs',
+      apiKey,
+      endpoint: config?.endpoint || 'https://api.elevenlabs.io/v1/voices',
+    });
+
+    if (!validation.valid) {
+      throw new Error(`ElevenLabs API key validation failed: ${validation.error}`);
+    }
+
+    // Store credential for future use
+    await this.cloudCredentialManager.storeCredential({
+      provider: 'elevenlabs',
+      apiKey,
+      endpoint: config?.endpoint,
+    });
+
+    // Initialize rate limiter
+    this.rateLimiter = new CloudRateLimiter();
+    this.rateLimiter.registerProvider('elevenlabs', DEFAULT_CONFIGS.elevenlabs);
+
+    // Initialize REST stream handler
+    const streamConfig: StreamConfig = {
+      url: 'https://api.elevenlabs.io/v1/text-to-speech',
+      apiKey,
+      timeout: 30000,
+    };
+
+    this.streamHandler = createStreamHandler('rest', streamConfig);
+
+    // Setup error handling
+    this.streamHandler.on('error', (error) => {
+      console.error('ElevenLabs stream error:', error);
+    });
+  }
+
+  /**
+   * Get cloud mode status
+   */
+  getCloudModeStatus(): {
+    initialized: boolean;
+    rateLimitStatus?: {
+      remainingRequests: number;
+      resetAt: Date;
+    };
+  } {
+    if (!this.rateLimiter) {
+      return { initialized: false };
+    }
+
+    const status = this.rateLimiter.getStatus('elevenlabs');
+    return {
+      initialized: true,
+      rateLimitStatus: {
+        remainingRequests: status.remainingQuota,
+        resetAt: status.resetAt,
+      },
+    };
+  }
+
+  /**
+   * Check if cloud mode is available
+   */
+  isCloudModeAvailable(): boolean {
+    return !!(this.cloudCredentialManager && this.rateLimiter && this.streamHandler);
+  }
+
+  /**
+   * Cleanup cloud mode resources
+   */
+  async cleanupCloudMode(): Promise<void> {
+    if (this.streamHandler) {
+      await this.streamHandler.disconnect();
+      this.streamHandler = null;
+    }
+    this.cloudCredentialManager = null;
+    this.rateLimiter = null;
   }
 }

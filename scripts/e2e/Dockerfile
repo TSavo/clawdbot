@@ -12,8 +12,10 @@ COPY src ./src
 COPY scripts ./scripts
 COPY docs ./docs
 COPY skills ./skills
+COPY extensions ./extensions
 
 RUN pnpm install --frozen-lockfile
+RUN pnpm --filter="@clawdbot/speech-plugins" build
 RUN pnpm build
 
 CMD ["bash"]

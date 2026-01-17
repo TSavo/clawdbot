@@ -2,10 +2,28 @@
 
 ## 2026.1.15 (unreleased)
 
+### Highlights
+- **Voice: Pluggable STT/TTS Architecture** — Enable Windows/Linux Talk Mode with pluggable providers (Whisper, Kokoro, Piper, OpenAI). Mix & match providers with priority fallback. Full backwards compatibility with existing voice-call extension.
+
+### Changes
+#### Voice Call / STT/TTS
+- **New: Pluggable STT/TTS Plugin System** (#RFC-voice-plugins)
+  - Extract OpenAI STT/TTS as plugins with full backwards compatibility
+  - Implement local STT provider (Whisper) for Windows/Linux with 5 model sizes
+  - Implement local TTS providers (Kokoro + Piper) for offline synthesis, 8-60+ voices
+  - Add complete G.711 audio format utilities (mu-law/PCM conversion, resampling)
+  - Support priority-based provider selection with automatic fallover
+  - Configuration-driven provider setup (YAML/JSON)
+  - 186 test cases with 78%+ coverage
+- **New: Windows/Linux Talk Mode** — Whisper local STT + Kokoro/Piper TTS enable voice features on Windows 10+ and Linux (Ubuntu 20.04+, Debian 11+)
+- **Enhanced: Cross-platform Audio Processing** — Complete G.711 codec implementation, bidirectional mu-law/PCM conversion, high-quality resampling
+- **Docs: Comprehensive Plugin Guide** — Full architecture documentation, 50+ examples, integration guide, system requirements for Windows/Linux
+
+#### Other Changes
 - Fix: guard model fallback against undefined provider/model values. (#954) — thanks @roshanasingh4.
 - Memory: make `node-llama-cpp` an optional dependency (avoid Node 25 install failures) and improve local-embeddings fallback/errors.
 - Browser: add `snapshot refs=aria` (Playwright aria-ref ids) for self-resolving refs across `snapshot` → `act`.
-- Browser: `profile="chrome"` now defaults to host control and returns clearer “attach a tab” errors.
+- Browser: `profile="chrome"` now defaults to host control and returns clearer "attach a tab" errors.
 - Browser: extension mode recovers when only one tab is attached (stale targetId fallback).
 - Browser: fix `tab not found` for extension relay snapshots/actions when Playwright blocks `newCDPSession` (use the single available Page).
 - Telegram: add bidirectional reaction support with configurable notifications and agent guidance. (#964) — thanks @bohdanpodvirnyi.

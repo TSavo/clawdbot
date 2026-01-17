@@ -22,6 +22,7 @@ import type { ModelsConfig } from "./types.models.js";
 import type { PluginsConfig } from "./types.plugins.js";
 import type { SkillsConfig } from "./types.skills.js";
 import type { ToolsConfig } from "./types.tools.js";
+import type { VoiceConfig } from "./types.voice.js";
 
 export type ClawdbotConfig = {
   auth?: AuthConfig;
@@ -74,6 +75,7 @@ export type ClawdbotConfig = {
   canvasHost?: CanvasHostConfig;
   talk?: TalkConfig;
   gateway?: GatewayConfig;
+  voice?: VoiceConfig;
 };
 
 export type ConfigValidationIssue = {

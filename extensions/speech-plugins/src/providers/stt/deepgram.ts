@@ -3,6 +3,12 @@
  *
  * Wraps the DeepgramExecutor to conform to the STTProvider interface.
  * Cloud-based speech-to-text with real-time streaming and turn detection.
+ *
+ * System Mode Features:
+ * - Local Deepgram SDK installation support
+ * - Automatic dependency management (ffmpeg, python3)
+ * - Model caching for offline use
+ * - Optional: Cloud API fallback with API key
  */
 
 import { BaseSTTPlugin } from './base.js';
@@ -12,6 +18,13 @@ import type {
 } from '../../interfaces/stt-provider.js';
 import type { VoiceProviderExecutor } from '@media/voice-providers/executor.js';
 import type { DeploymentConfig } from '@config/deployment-config.types.js';
+import { CloudCredentialManager, getCredentialManager } from '../cloud-credential-manager.js';
+import {
+  createStreamHandler,
+  type StreamConfig,
+  type BaseStreamHandler,
+} from '../cloud-stream-handlers.js';
+import { CloudRateLimiter, DEFAULT_CONFIGS } from '../cloud-rate-limiter.js';
 
 /**
  * Deepgram STT Plugin
@@ -25,6 +38,9 @@ import type { DeploymentConfig } from '@config/deployment-config.types.js';
  */
 export class DeepgramSTTPlugin extends BaseSTTPlugin {
   readonly metadata: STTProviderMetadata;
+  private cloudCredentialManager: CloudCredentialManager | null = null;
+  private rateLimiter: CloudRateLimiter | null = null;
+  private streamHandler: BaseStreamHandler | null = null;
 
   constructor(deploymentConfig?: DeploymentConfig) {
     super(deploymentConfig);
@@ -44,17 +60,18 @@ export class DeepgramSTTPlugin extends BaseSTTPlugin {
 
           const cfg = config as Record<string, unknown>;
 
-          if (cfg.mode && cfg.mode !== 'cloud') {
+          if (cfg.mode && !['cloud', 'system'].includes(cfg.mode as string)) {
             return {
               ok: false,
-              errors: ['Deepgram only supports "cloud" mode'],
+              errors: ['Deepgram supports "cloud" (API) or "system" (local) modes'],
             };
           }
 
-          if (!cfg.apiKey && !process.env.DEEPGRAM_API_KEY) {
+          // Cloud mode requires API key, system mode does not
+          if (cfg.mode === 'cloud' && !cfg.apiKey && !process.env.DEEPGRAM_API_KEY) {
             return {
               ok: false,
-              errors: ['apiKey is required (or set DEEPGRAM_API_KEY environment variable)'],
+              errors: ['apiKey is required in cloud mode (or set DEEPGRAM_API_KEY environment variable)'],
             };
           }
 
@@ -70,11 +87,11 @@ export class DeepgramSTTPlugin extends BaseSTTPlugin {
         properties: {
           mode: {
             type: 'string',
-            description: 'Deployment mode (must be "cloud")',
+            description: 'Deployment mode: "cloud" (API-based) or "system" (local installation)',
           },
           apiKey: {
             type: 'string',
-            description: 'Deepgram API key',
+            description: 'Deepgram API key (required for cloud mode)',
           },
           model: {
             type: 'string',
@@ -103,6 +120,14 @@ export class DeepgramSTTPlugin extends BaseSTTPlugin {
           numSpeakers: {
             type: 'number',
             description: 'Expected number of speakers (for diarization)',
+          },
+          cachePath: {
+            type: 'string',
+            description: 'Model cache directory path (system mode only)',
+          },
+          pythonPath: {
+            type: 'string',
+            description: 'Python executable path for system deployment',
           },
         },
       },
@@ -218,5 +243,113 @@ export class DeepgramSTTPlugin extends BaseSTTPlugin {
       ],
       maxDurationSeconds: null,
     };
+  }
+
+  /**
+   * Initialize cloud mode with credential management and rate limiting
+   *
+   * Cloud mode features:
+   * - WebSocket streaming for real-time transcription
+   * - Secure credential storage
+   * - Automatic rate limiting
+   * - Provider fallback support
+   */
+  async initializeCloudMode(config?: {
+    apiKey?: string;
+    endpoint?: string;
+  }): Promise<void> {
+    // Get credential manager
+    this.cloudCredentialManager = await getCredentialManager();
+
+    // Store or retrieve credentials
+    const apiKey =
+      config?.apiKey ||
+      process.env.DEEPGRAM_API_KEY ||
+      (await this.cloudCredentialManager.getCredential('deepgram'))?.apiKey;
+
+    if (!apiKey) {
+      throw new Error(
+        'Deepgram API key not found. Set DEEPGRAM_API_KEY environment variable or provide it in config.',
+      );
+    }
+
+    // Validate credential
+    const validation = await this.cloudCredentialManager.validateCredential('deepgram', {
+      provider: 'deepgram',
+      apiKey,
+      endpoint: config?.endpoint || 'https://api.deepgram.com/v1/models',
+    });
+
+    if (!validation.valid) {
+      throw new Error(`Deepgram API key validation failed: ${validation.error}`);
+    }
+
+    // Store credential for future use
+    await this.cloudCredentialManager.storeCredential({
+      provider: 'deepgram',
+      apiKey,
+      endpoint: config?.endpoint,
+    });
+
+    // Initialize rate limiter
+    this.rateLimiter = new CloudRateLimiter();
+    this.rateLimiter.registerProvider('deepgram', DEFAULT_CONFIGS.deepgram);
+
+    // Initialize WebSocket stream handler
+    const streamConfig: StreamConfig = {
+      url: 'wss://api.deepgram.com/v1/listen',
+      apiKey,
+      timeout: 30000,
+    };
+
+    this.streamHandler = createStreamHandler('websocket', streamConfig);
+
+    // Setup error handling
+    this.streamHandler.on('error', (error) => {
+      console.error('Deepgram stream error:', error);
+    });
+  }
+
+  /**
+   * Get cloud mode status
+   */
+  getCloudModeStatus(): {
+    initialized: boolean;
+    rateLimitStatus?: {
+      remainingRequests: number;
+      resetAt: Date;
+    };
+  } {
+    if (!this.rateLimiter) {
+      return { initialized: false };
+    }
+
+    const status = this.rateLimiter.getStatus('deepgram');
+    return {
+      initialized: true,
+      rateLimitStatus: {
+        remainingRequests: status.remainingQuota,
+        resetAt: status.resetAt,
+      },
+    };
+  }
+
+  /**
+   * Check if cloud mode is available
+   */
+  isCloudModeAvailable(): boolean {
+    return !!(this.cloudCredentialManager && this.rateLimiter && this.streamHandler);
+  }
+
+  /**
+   * Cleanup cloud mode resources
+   */
+  async cleanupCloudMode(): Promise<void> {
+    if (this.streamHandler) {
+      await this.streamHandler.disconnect();
+      this.streamHandler = null;
+    }
+    this.cloudCredentialManager = null;
+    this.rateLimiter = null;
   }
 }

@@ -77,6 +77,19 @@ export type {
 export { SimplePluginRegistry, expandEnvVars, validateDeploymentConfig } from "./registry/plugin-registry.js";
 export type { ProviderFactory } from "./registry/plugin-registry.js";
 
+// Unified Provider Registry
+export {
+  UnifiedProviderRegistry,
+  createProviderRegistry,
+  getProviderRegistry,
+} from "./registry/provider-registry.js";
+export type {
+  DeploymentMode,
+  ModeConfig,
+  ProviderMetadata,
+  ProviderDiscovery,
+} from "./registry/provider-registry.js";
+
 // Provider plugin configuration and identifiers
 export type { DeploymentConfig, ProviderPluginConfig } from "./providers/index.js";
 export {
@@ -91,3 +104,6 @@ export {
   getSTTProviderPlugins,
   getTTSProviderPlugins,
 } from "./providers/index.js";
+
+// Plugin installer utility
+export { installVoiceProviderPlugin } from "./plugin-installer.js";

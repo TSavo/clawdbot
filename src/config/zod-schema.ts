@@ -5,6 +5,7 @@ import { HexColorSchema, ModelsConfigSchema } from "./zod-schema.core.js";
 import { HookMappingSchema, HooksGmailSchema } from "./zod-schema.hooks.js";
 import { ChannelsSchema } from "./zod-schema.providers.js";
 import { CommandsSchema, MessagesSchema, SessionSchema } from "./zod-schema.session.js";
+import { VoiceConfigSchema } from "./zod-schema.voice-providers.js";
 
 export const ClawdbotSchema = z
   .object({
@@ -317,6 +318,7 @@ export const ClawdbotSchema = z
           .optional(),
       })
       .optional(),
+    voice: VoiceConfigSchema,
   })
   .passthrough()
   .superRefine((cfg, ctx) => {

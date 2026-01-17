@@ -11,6 +11,7 @@ import { registerOnboardCommand } from "./register.onboard.js";
 import { registerSetupCommand } from "./register.setup.js";
 import { registerStatusHealthSessionsCommands } from "./register.status-health-sessions.js";
 import { registerSubCliCommands } from "./register.subclis.js";
+import { registerVoiceCommands } from "./register.voice.js";
 
 export function buildProgram() {
   const program = new Command();
@@ -27,6 +28,7 @@ export function buildProgram() {
   registerAgentCommands(program, {
     agentChannelOptions: ctx.agentChannelOptions,
   });
+  registerVoiceCommands(program);
   registerSubCliCommands(program);
   registerStatusHealthSessionsCommands(program);
   registerBrowserCli(program);

@@ -14,6 +14,12 @@ import type {
 import { BaseTTSPlugin } from './base.js';
 import { KokoroExecutor } from '@media/voice-providers/kokoro.js';
 import type { DeploymentConfig } from '@config/deployment-config.types.js';
+import {
+  initializeTTSDockerMode,
+  checkTTSContainerHealth,
+  startTTSContainer,
+  stopTTSContainer,
+} from './docker-handler.js';
 
 /**
  * Kokoro TTS plugin configuration
@@ -46,6 +52,8 @@ export interface KokoroTTSConfig {
  */
 export class KokoroTTSPlugin extends BaseTTSPlugin {
   readonly metadata: TTSProviderMetadata;
+  private dockerHealth: any = null;
+  private dockerInitialized = false;
 
   constructor(private config: KokoroTTSConfig) {
     super();
@@ -116,5 +124,115 @@ export class KokoroTTSPlugin extends BaseTTSPlugin {
    */
   async listVoices(): Promise<TTSVoice[]> {
     return this.metadata.capabilities.voices;
+  }
+
+  /**
+   * Initialize Docker mode for Kokoro
+   * Pulls image, creates volumes, starts container, and performs health check
+   */
+  async initializeDockerMode(verbose = false): Promise<{
+    success: boolean;
+    port: number;
+    volumePath: string;
+    containerId?: string;
+    error?: string;
+  }> {
+    if (this.config.mode !== 'docker') {
+      return {
+        success: false,
+        port: this.config.docker?.port || 8000,
+        volumePath: '',
+        error: 'Provider not configured for Docker mode',
+      };
+    }
+
+    try {
+      const result = await initializeTTSDockerMode(
+        'kokoro',
+        {
+          provider: 'kokoro',
+          image: this.config.docker?.image,
+          port: this.config.docker?.port,
+          env: this.config.docker?.env,
+        },
+        verbose,
+      );
+
+      if (result.success) {
+        this.dockerInitialized = true;
+        this.dockerHealth = {
+          port: result.port,
+          volumePath: result.volumePath,
+          containerId: result.containerId,
+        };
+      }
+
+      return result;
+    } catch (error) {
+      return {
+        success: false,
+        port: this.config.docker?.port || 8000,
+        volumePath: '',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
+   * Check Docker container health
+   */
+  async checkDockerHealth(verbose = false): Promise<boolean> {
+    if (this.config.mode !== 'docker') {
+      return false;
+    }
+
+    try {
+      const health = await checkTTSContainerHealth('kokoro', verbose);
+      this.dockerHealth = {
+        running: health.running,
+        healthy: health.healthy,
+        port: health.port,
+        containerId: health.containerId,
+      };
+      return health.healthy;
+    } catch (error) {
+      if (verbose) {
+        console.error('Health check failed:', error);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Stop Docker container
+   */
+  async stopDocker(verbose = false): Promise<boolean> {
+    if (this.config.mode !== 'docker') {
+      return false;
+    }
+
+    try {
+      const success = await stopTTSContainer('kokoro', verbose);
+      if (success) {
+        this.dockerInitialized = false;
+        this.dockerHealth = null;
+      }
+      return success;
+    } catch (error) {
+      if (verbose) {
+        console.error('Failed to stop Docker container:', error);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Get Docker status
+   */
+  getDockerStatus(): { initialized: boolean; health: any } {
+    return {
+      initialized: this.dockerInitialized,
+      health: this.dockerHealth,
+    };
   }
 }
