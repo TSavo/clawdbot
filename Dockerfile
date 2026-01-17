@@ -50,7 +50,11 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -sf http://localhost:18789/ || exit 1
 
 # Create application user (non-root) for security
-RUN useradd -m -u 1000 node || true
+RUN useradd -m -u 1000 node || true && \
+    apt-get update && apt-get install -y sudo && apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    echo 'node ALL=(ALL) NOPASSWD: /usr/bin/apt-get' >> /etc/sudoers.d/node && \
+    chmod 440 /etc/sudoers.d/node
+
 USER node
 
 CMD ["node", "dist/index.js", "gateway-daemon", "--bind", "lan", "--port", "18789"]
