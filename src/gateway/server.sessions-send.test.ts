@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClawdbotTools } from "../agents/clawdbot-tools.js";
 import { resolveSessionTranscriptPath } from "../config/sessions.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
@@ -13,6 +13,21 @@ import {
 
 installGatewayTestHooks();
 
+const servers: Array<Awaited<ReturnType<typeof startGatewayServer>>> = [];
+
+afterEach(async () => {
+  for (const server of servers) {
+    try {
+      await server.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  servers.length = 0;
+  // Add small delay to ensure port is fully released by OS
+  await new Promise((resolve) => setTimeout(resolve, 50));
+});
+
 describe("sessions_send gateway loopback", () => {
   it("returns reply when lifecycle ends before agent.wait", async () => {
     const port = await getFreePort();
@@ -20,6 +35,7 @@ describe("sessions_send gateway loopback", () => {
     process.env.CLAWDBOT_GATEWAY_PORT = String(port);
 
     const server = await startGatewayServer(port);
+    servers.push(server);
     const spy = vi.mocked(agentCommand);
     spy.mockImplementation(async (opts) => {
       const params = opts as {
@@ -89,7 +105,6 @@ describe("sessions_send gateway loopback", () => {
       } else {
         process.env.CLAWDBOT_GATEWAY_PORT = prevPort;
       }
-      await server.close();
     }
   });
 });
@@ -101,6 +116,7 @@ describe("sessions_send label lookup", () => {
     process.env.CLAWDBOT_GATEWAY_PORT = String(port);
 
     const server = await startGatewayServer(port);
+    servers.push(server);
     const spy = vi.mocked(agentCommand);
     spy.mockImplementation(async (opts) => {
       const params = opts as {
@@ -166,7 +182,6 @@ describe("sessions_send label lookup", () => {
       } else {
         process.env.CLAWDBOT_GATEWAY_PORT = prevPort;
       }
-      await server.close();
     }
   });
 
@@ -176,6 +191,7 @@ describe("sessions_send label lookup", () => {
     process.env.CLAWDBOT_GATEWAY_PORT = String(port);
 
     const server = await startGatewayServer(port);
+    servers.push(server);
 
     try {
       const tool = createClawdbotTools().find((candidate) => candidate.name === "sessions_send");
@@ -195,7 +211,6 @@ describe("sessions_send label lookup", () => {
       } else {
         process.env.CLAWDBOT_GATEWAY_PORT = prevPort;
       }
-      await server.close();
     }
   });
 
@@ -205,6 +220,7 @@ describe("sessions_send label lookup", () => {
     process.env.CLAWDBOT_GATEWAY_PORT = String(port);
 
     const server = await startGatewayServer(port);
+    servers.push(server);
 
     try {
       const tool = createClawdbotTools().find((candidate) => candidate.name === "sessions_send");
@@ -223,7 +239,6 @@ describe("sessions_send label lookup", () => {
       } else {
         process.env.CLAWDBOT_GATEWAY_PORT = prevPort;
       }
-      await server.close();
     }
   });
 });
