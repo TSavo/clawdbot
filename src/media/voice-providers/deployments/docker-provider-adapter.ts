@@ -150,7 +150,12 @@ export class PortAllocator {
       return preferredPort;
     }
 
-    for (let port = this.minPort; port <= this.maxPort; port++) {
+    // If preferred port is taken, start search from preferred + 1
+    const startPort = preferredPort && this.allocatedPorts.has(preferredPort)
+      ? preferredPort + 1
+      : this.minPort;
+
+    for (let port = startPort; port <= this.maxPort; port++) {
       if (!this.allocatedPorts.has(port)) {
         this.allocatedPorts.add(port);
         return port;
