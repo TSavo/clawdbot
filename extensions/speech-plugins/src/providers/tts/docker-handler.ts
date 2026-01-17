@@ -68,6 +68,7 @@ export interface TTSDockerConfig {
   provider: keyof typeof TTS_DOCKER_IMAGES;
   image?: string;
   port?: number;
+  containerPort?: number;
   volumeMount?: string;
   env?: Record<string, string>;
   resourceLimits?: {

@@ -2,13 +2,17 @@
  * Whisper Docker Deployment Handler
  *
  * Manages Docker container lifecycle for Whisper STT service.
- * Handles image building, container setup, and health monitoring.
+ * Handles container setup, port discovery, health monitoring, and transcription.
  */
 
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { AudioBuffer, TranscribeOptions, TranscriptionResult } from './executor.js';
-import { VoiceProviderError } from './executor.js';
+import type {
+  AudioBuffer,
+  TranscribeOptions,
+  TranscriptionResult,
+} from './executor.js';
+import { AudioFormat, VoiceProviderError } from './executor.js';
 
 const execAsync = promisify(exec);
 
@@ -19,11 +23,7 @@ interface DockerDeploymentConfig {
   port: number;
   dockerImage: string;
   containerName: string;
-  gpuEnabled: boolean;
   modelSize: string;
-  cpuLimit?: string;
-  memoryLimit?: string;
-  volumeMounts?: Record<string, string>;
 }
 
 /**
@@ -37,26 +37,23 @@ interface ContainerStatus {
 }
 
 /**
- * Comprehensive Docker deployment handler for Whisper
+ * Whisper Docker deployment handler
  */
 export class WhisperDockerDeploymentHandler {
   private containerRunning = false;
   private containerId?: string;
-  private assignedPort: number | null = null;  // Dynamically discovered port
   private apiBaseUrl: string;
   private config: DockerDeploymentConfig;
-  private healthCheckInterval?: NodeJS.Timeout;
+  private healthCheckInterval?: NodeJS.Timer;
+  private assignedPort: number | null = null;
 
   constructor(config: Partial<DockerDeploymentConfig> = {}) {
     this.config = {
       port: config.port || 8000,
-      dockerImage: config.dockerImage || 'openai/whisper:latest',
+      dockerImage:
+        config.dockerImage || 'fedirz/faster-whisper-server:latest-cpu',
       containerName: config.containerName || 'whisper-stt',
-      gpuEnabled: config.gpuEnabled || false,
       modelSize: config.modelSize || 'base',
-      cpuLimit: config.cpuLimit || '2',
-      memoryLimit: config.memoryLimit || '4g',
-      volumeMounts: config.volumeMounts || {},
     };
 
     this.apiBaseUrl = `http://localhost:${this.config.port}`;
@@ -73,32 +70,23 @@ export class WhisperDockerDeploymentHandler {
       if (status.running && status.containerId) {
         this.containerRunning = true;
         this.containerId = status.containerId;
-        // Try to get the assigned port from running container
-        if (this.containerId) {
-          this.assignedPort = await this.getAssignedPort(this.containerId).catch(() => null);
-          if (this.assignedPort) {
-            this.apiBaseUrl = `http://localhost:${this.assignedPort}`;
-          }
+        if (status.port) {
+          this.assignedPort = status.port;
+          this.updateApiUrl();
         }
         return;
       }
 
-      // Build or pull the Docker image
+      // Pull the Docker image
       await this.ensureImageAvailable();
 
       // Create and start the container
       await this.createAndStartContainer();
 
-      // Query Docker to find the assigned port
-      if (this.containerId) {
-        this.assignedPort = await this.getAssignedPort(this.containerId);
-        this.apiBaseUrl = `http://localhost:${this.assignedPort}`;
-        console.log(
-          `[Whisper Docker] Container port 8000 mapped to host port ${this.assignedPort}`,
-        );
-      }
+      // Discover assigned port
+      await this.getAssignedPortFromContainer();
 
-      // Wait for API to be ready using the dynamically discovered port
+      // Wait for API to be ready
       await this.waitForApiReady();
 
       this.containerRunning = true;
@@ -106,6 +94,7 @@ export class WhisperDockerDeploymentHandler {
       // Start periodic health checks
       this.startHealthCheckInterval();
     } catch (error) {
+      this.containerRunning = false;
       throw new VoiceProviderError(
         `Failed to start Docker container: ${error instanceof Error ? error.message : String(error)}`,
         'whisper-docker',
@@ -121,7 +110,7 @@ export class WhisperDockerDeploymentHandler {
     try {
       // Stop health check interval
       if (this.healthCheckInterval) {
-        clearInterval(this.healthCheckInterval);
+        clearInterval(this.healthCheckInterval as unknown as number);
         this.healthCheckInterval = undefined;
       }
 
@@ -133,23 +122,16 @@ export class WhisperDockerDeploymentHandler {
         this.containerId = status.containerId;
       }
 
-      // Try graceful stop with timeout
+      // Try graceful stop first
       try {
-        await execAsync(`docker stop -t 10 ${this.containerId}`);
-      } catch (stopError) {
-        console.warn('[Whisper Docker] Graceful stop failed, forcing kill...');
+        await execAsync(`docker stop ${this.containerId}`);
+      } catch {
+        // If graceful stop fails, force kill
         await execAsync(`docker kill ${this.containerId}`);
       }
 
-      // Remove container
-      try {
-        await execAsync(`docker rm ${this.containerId}`);
-      } catch (rmError) {
-        console.warn(
-          '[Whisper Docker] Failed to remove container:',
-          rmError instanceof Error ? rmError.message : String(rmError),
-        );
-      }
+      // Remove the container
+      await execAsync(`docker rm ${this.containerId}`);
 
       this.containerRunning = false;
       this.containerId = undefined;
@@ -172,7 +154,7 @@ export class WhisperDockerDeploymentHandler {
         `docker ps -a --filter "name=${this.config.containerName}" --format "{{.ID}}|{{.Status}}"`,
       );
 
-      const lines = stdout.trim().split('\n').filter(l => l);
+      const lines = stdout.trim().split('\n').filter((l) => l);
 
       if (lines.length === 0) {
         return { running: false };
@@ -189,7 +171,7 @@ export class WhisperDockerDeploymentHandler {
       return {
         running: isRunning,
         containerId,
-        port: this.assignedPort || this.config.port,
+        port: this.config.port,
       };
     } catch (error) {
       return {
@@ -200,103 +182,68 @@ export class WhisperDockerDeploymentHandler {
   }
 
   /**
-   * Query Docker to find the assigned host port for internal port 8000
-   * Uses 'docker port' command which is more reliable than inspect
-   */
-  private async getAssignedPort(containerId: string): Promise<number> {
-    try {
-      const { stdout } = await execAsync(
-        `docker port ${containerId} 8000/tcp`,
-      );
-
-      // Output format: "0.0.0.0:ASSIGNED_PORT"
-      const portMatch = stdout.trim().match(/:(\d+)$/);
-      if (portMatch && portMatch[1]) {
-        const port = parseInt(portMatch[1], 10);
-        if (!Number.isNaN(port)) {
-          return port;
-        }
-      }
-
-      throw new Error(`Could not parse port from: ${stdout.trim()}`);
-    } catch (error) {
-      throw new Error(
-        `Failed to get assigned port for container ${containerId}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-
-  /**
-   * Ensure Docker image is available (pull or build)
+   * Ensure Docker image is available (pull)
    */
   private async ensureImageAvailable(): Promise<void> {
-    try {
-      // Try to pull the image
-      await execAsync(`docker pull ${this.config.dockerImage}`);
-    } catch (error) {
-      // If pull fails, attempt to build from local Dockerfile
-      console.warn(`Failed to pull ${this.config.dockerImage}, building locally...`);
-      await this.buildImageLocally();
-    }
-  }
-
-  /**
-   * Build Docker image locally from Dockerfile
-   */
-  private async buildImageLocally(): Promise<void> {
-    try {
-      await execAsync(
-        `docker build -t ${this.config.dockerImage} .`,
-        {
-          cwd: process.cwd(),
-        },
-      );
-    } catch (error) {
-      throw new Error(
-        `Failed to build Docker image: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    await execAsync(`docker pull ${this.config.dockerImage}`);
   }
 
   /**
    * Create and start Docker container
-   * Uses -p 0:8000 to let Docker automatically assign an available port
    */
   private async createAndStartContainer(): Promise<void> {
-    const volumeFlags = Object.entries(this.config.volumeMounts || {})
-      .map(([local, container]) => `-v ${local}:${container}`)
-      .join(' ');
-
-    const gpuFlags = this.config.gpuEnabled
-      ? '--gpus all'
-      : '';
-
     const runCommand = [
       'docker run',
       '-d',
       `--name ${this.config.containerName}`,
-      '-p 0:8000',  // Let Docker assign an available port
-      `--cpus=${this.config.cpuLimit}`,
-      `-m ${this.config.memoryLimit}`,
-      volumeFlags,
-      gpuFlags,
-      `-e WHISPER_MODEL_SIZE=${this.config.modelSize}`,
+      `-p ${this.config.port}:8000`,
+      `-e WHISPER_MODEL=${this.config.modelSize}`,
       this.config.dockerImage,
-    ]
-      .filter(Boolean)
-      .join(' ');
+    ].join(' ');
 
     const { stdout } = await execAsync(runCommand);
     this.containerId = stdout.trim();
 
     if (!this.containerId) {
-      throw new Error('No container ID returned from docker run');
+      throw new Error('Failed to start container - no ID returned');
+    }
+  }
+
+  /**
+   * Get assigned port from running container
+   */
+  private async getAssignedPortFromContainer(): Promise<void> {
+    if (!this.containerId) {
+      throw new Error('Container ID not found');
     }
 
-    // Verify container is actually running
-    const status = await this.getContainerStatus();
-    if (!status.running) {
-      throw new Error(`Container failed to start, status: ${status.running}`);
+    try {
+      const { stdout } = await execAsync(
+        `docker inspect ${this.containerId} --format='{{range .NetworkSettings.Ports}}{{index (split (index (split .[] "/") 0) ":") 1}}{{end}}'`,
+      );
+
+      const portStr = stdout.trim();
+      const port = parseInt(portStr, 10);
+
+      if (!Number.isNaN(port) && port > 0) {
+        this.assignedPort = port;
+        this.updateApiUrl();
+      } else {
+        // Fallback to configured port
+        this.assignedPort = this.config.port;
+      }
+    } catch (error) {
+      // Fallback to configured port on error
+      this.assignedPort = this.config.port;
+    }
+  }
+
+  /**
+   * Update API URL based on assigned port
+   */
+  private updateApiUrl(): void {
+    if (this.assignedPort) {
+      this.apiBaseUrl = `http://localhost:${this.assignedPort}`;
     }
   }
 
@@ -323,7 +270,7 @@ export class WhisperDockerDeploymentHandler {
         // API not ready yet
       }
 
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
       attempts++;
     }
 
@@ -336,12 +283,7 @@ export class WhisperDockerDeploymentHandler {
   private startHealthCheckInterval(): void {
     this.healthCheckInterval = setInterval(async () => {
       try {
-        const healthy = await this.healthCheck();
-
-        if (!healthy) {
-          console.warn('Whisper Docker container health check failed');
-          // Could implement auto-recovery here if needed
-        }
+        await this.healthCheck();
       } catch (error) {
         console.error('Health check error:', error);
       }
@@ -388,9 +330,10 @@ export class WhisperDockerDeploymentHandler {
       const formData = new FormData();
 
       // Add audio as WAV blob
+      const buffer = audio.data.buffer.slice(0);
       formData.append(
-        'audio',
-        new Blob([Buffer.from(audio.data)], { type: 'audio/wav' }),
+        'file',
+        new Blob([buffer as ArrayBuffer], { type: 'audio/wav' }),
         'audio.wav',
       );
 
@@ -399,15 +342,14 @@ export class WhisperDockerDeploymentHandler {
         formData.append('language', options.language);
       }
 
-      if (this.config.modelSize) {
-        formData.append('model_size', this.config.modelSize);
-      }
-
-      const response = await fetch(`${this.apiBaseUrl}/transcribe`, {
-        method: 'POST',
-        body: formData,
-        signal: AbortSignal.timeout(options?.timeout || 60000),
-      });
+      const response = await fetch(
+        `${this.apiBaseUrl}/v1/audio/transcriptions`,
+        {
+          method: 'POST',
+          body: formData,
+          signal: AbortSignal.timeout(options?.timeout || 60000),
+        },
+      );
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -429,7 +371,10 @@ export class WhisperDockerDeploymentHandler {
         provider: 'whisper-docker',
       };
     } catch (error) {
-      if (error instanceof TypeError && error.message.includes('fetch failed')) {
+      if (
+        error instanceof TypeError &&
+        error.message.includes('fetch failed')
+      ) {
         throw new VoiceProviderError(
           'Failed to connect to Whisper API',
           'whisper-docker',
@@ -461,31 +406,6 @@ export class WhisperDockerDeploymentHandler {
   }
 
   /**
-   * Get container stats
-   */
-  async getStats(): Promise<Record<string, unknown>> {
-    if (!this.containerId) {
-      throw new Error('Container not found');
-    }
-
-    try {
-      const { stdout } = await execAsync(
-        `docker stats ${this.containerId} --no-stream --format "table"`,
-      );
-
-      return {
-        raw: stdout,
-        containerRunning: this.containerRunning,
-        containerPort: this.config.port,
-      };
-    } catch (error) {
-      return {
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }
-
-  /**
    * Get API base URL
    */
   getApiUrl(): string {
@@ -514,7 +434,7 @@ export class WhisperDockerDeploymentHandler {
   }
 
   /**
-   * Get the actual port assigned by Docker
+   * Get assigned port number
    */
   getAssignedPortNumber(): number | null {
     return this.assignedPort;

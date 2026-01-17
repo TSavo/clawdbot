@@ -39,71 +39,12 @@ export type {
   RegistryEventListener,
 } from "./interfaces/plugin-registry.js";
 
-// Test utilities (re-exported for provider implementations)
-export {
-  createMockSTTProvider,
-  createMockTTSProvider,
-  createMockAudioBuffer,
-  createMockWAVFile,
-  createMockStream,
-  createErrorSTTProvider,
-  createErrorTTSProvider,
-} from "./test-utils/mocks.js";
+// Plugin registration
+export { registerVoiceProvidersPlugin } from "./plugin-registration.js";
 
-export {
-  generateSineWave,
-  generateWhiteNoise,
-  generateSpeechPattern,
-  createWAVBuffer,
-  AudioFixtures,
-  AudioBufferUtils,
-} from "./test-utils/audio-fixtures.js";
+// NOTE: Provider classes and registries are NOT re-exported from the plugin entry point
+// This prevents circular dependencies and module resolution issues when loading as a plugin.
+// They are available for direct import if needed (e.g., from extensions, internal modules)
 
-// TTS Provider Plugins
-export {
-  BaseTTSPlugin,
-  KokoroTTSPlugin,
-  CartesiaTTSPlugin,
-  ElevenLabsTTSPlugin,
-  ChatterboxTTSPlugin,
-} from "./providers/tts/index.js";
-
-export type {
-  KokoroTTSConfig,
-  ElevenLabsTTSConfig,
-} from "./providers/tts/index.js";
-
-// Registry implementation
-export { SimplePluginRegistry, expandEnvVars, validateDeploymentConfig } from "./registry/plugin-registry.js";
-export type { ProviderFactory } from "./registry/plugin-registry.js";
-
-// Unified Provider Registry
-export {
-  UnifiedProviderRegistry,
-  createProviderRegistry,
-  getProviderRegistry,
-} from "./registry/provider-registry.js";
-export type {
-  DeploymentMode,
-  ModeConfig,
-  ProviderMetadata,
-  ProviderDiscovery,
-} from "./registry/provider-registry.js";
-
-// Provider plugin configuration and identifiers
-export type { DeploymentConfig, ProviderPluginConfig } from "./providers/index.js";
-export {
-  WHISPER_SYSTEM_PLUGIN,
-  FASTER_WHISPER_DOCKER_PLUGIN,
-  DEEPGRAM_CLOUD_PLUGIN,
-  KOKORO_SYSTEM_PLUGIN,
-  CARTESIA_CLOUD_PLUGIN,
-  ELEVENLABS_CLOUD_PLUGIN,
-  CHATTERBOX_DOCKER_PLUGIN,
-  getAllProviderPlugins,
-  getSTTProviderPlugins,
-  getTTSProviderPlugins,
-} from "./providers/index.js";
-
-// Plugin installer utility
-export { installVoiceProviderPlugin } from "./plugin-installer.js";
+// Default export for plugin system
+export { registerVoiceProvidersPlugin as default } from "./plugin-registration.js";

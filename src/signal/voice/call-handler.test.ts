@@ -86,7 +86,13 @@ describe('SignalVoiceCallHandler', () => {
       expect(call.encrypted).toBe(true);
       expect(call.encryptionVerified).toBe(false); // Not yet verified
 
-      const emittedCall = await incomingPromise;
+      // Wait for event with timeout
+      const emittedCall = await Promise.race([
+        incomingPromise,
+        new Promise<VoiceCall>((_, reject) =>
+          setTimeout(() => reject(new Error('Event timeout')), 5000)
+        ),
+      ]);
       expect(emittedCall.callId).toBe('test-call-1');
     });
 
@@ -219,11 +225,24 @@ describe('SignalVoiceCallHandler', () => {
 
       await handler.acceptCall();
 
-      const acceptedCall = await acceptedPromise;
+      // Wait for both events with timeout
+      const [acceptedCall, verifiedCall] = await Promise.all([
+        Promise.race([
+          acceptedPromise,
+          new Promise<VoiceCall>((_, reject) =>
+            setTimeout(() => reject(new Error('Event timeout')), 5000)
+          ),
+        ]),
+        Promise.race([
+          verifiedPromise,
+          new Promise<VoiceCall>((_, reject) =>
+            setTimeout(() => reject(new Error('Event timeout')), 5000)
+          ),
+        ]),
+      ]);
+
       expect(acceptedCall.state).toBe('connected');
       expect(acceptedCall.encryptionVerified).toBe(true);
-
-      const verifiedCall = await verifiedPromise;
       expect(verifiedCall.encryptionFingerprint).toBe('fingerprint-abc123');
     });
 
@@ -253,7 +272,13 @@ describe('SignalVoiceCallHandler', () => {
 
       await expect(handler.acceptCall()).rejects.toThrow('verification failed');
 
-      const [failedCall, error] = await failedPromise;
+      // Wait for failed event with timeout
+      const [failedCall, error] = await Promise.race([
+        failedPromise,
+        new Promise<[VoiceCall, Error]>((_, reject) =>
+          setTimeout(() => reject(new Error('Event timeout')), 5000)
+        ),
+      ]);
       expect(failedCall.state).toBe('failed');
       expect(failedCall.errorCode).toBe('ENCRYPTION_NOT_VERIFIED');
     });
@@ -324,7 +349,13 @@ describe('SignalVoiceCallHandler', () => {
       expect(stream.sampleRate).toBe(48000);
       expect(stream.streamId).toBe('stream-123');
 
-      await audioReadyPromise;
+      // Wait for audio ready event with timeout
+      await Promise.race([
+        audioReadyPromise,
+        new Promise<VoiceCall>((_, reject) =>
+          setTimeout(() => reject(new Error('Event timeout')), 5000)
+        ),
+      ]);
     });
 
     it('should fail when no active call', async () => {
@@ -358,11 +389,20 @@ describe('SignalVoiceCallHandler', () => {
         });
       });
 
+      // Simulate some call duration
+      await new Promise(resolve => setTimeout(resolve, 50));
+
       vi.mocked(signalRpcRequest).mockResolvedValueOnce({});
 
       await handler.endCall('Test end');
 
-      const endedCall = await endedPromise;
+      // Wait for ended event with timeout
+      const endedCall = await Promise.race([
+        endedPromise,
+        new Promise<VoiceCall>((_, reject) =>
+          setTimeout(() => reject(new Error('Event timeout')), 5000)
+        ),
+      ]);
       expect(endedCall.state).toBe('ended');
       expect(endedCall.duration).toBeGreaterThan(0);
       expect(handler.isOnCall()).toBe(false);
@@ -403,7 +443,7 @@ describe('SignalVoiceCallHandler', () => {
       await handler.acceptCall();
     });
 
-    it('should handle participant joined', () => {
+    it('should handle participant joined', async () => {
       const joinedPromise = new Promise<[VoiceCall, any]>((resolve) => {
         handler.on('call:participant-joined', (call, participant) => {
           resolve([call, participant]);
@@ -412,14 +452,18 @@ describe('SignalVoiceCallHandler', () => {
 
       handler.handleParticipantJoined('+15552222222', 'uuid-participant-2');
 
-      return joinedPromise.then(([call, participant]) => {
-        expect(participant.id).toBe('+15552222222');
-        expect(participant.joined).toBe(true);
-        expect(call.participants.length).toBe(2); // Original caller + new participant
-      });
+      const [call, participant] = await Promise.race([
+        joinedPromise,
+        new Promise<[VoiceCall, any]>((_, reject) =>
+          setTimeout(() => reject(new Error('Event timeout')), 5000)
+        ),
+      ]);
+      expect(participant.id).toBe('+15552222222');
+      expect(participant.joined).toBe(true);
+      expect(call.participants.length).toBe(2); // Original caller + new participant
     });
 
-    it('should handle participant left', () => {
+    it('should handle participant left', async () => {
       handler.handleParticipantJoined('+15552222222', 'uuid-participant-2');
 
       const leftPromise = new Promise<[VoiceCall, any]>((resolve) => {
@@ -430,10 +474,14 @@ describe('SignalVoiceCallHandler', () => {
 
       handler.handleParticipantLeft('+15552222222');
 
-      return leftPromise.then(([call, participant]) => {
-        expect(participant.id).toBe('+15552222222');
-        expect(participant.joined).toBe(false);
-      });
+      const [call, participant] = await Promise.race([
+        leftPromise,
+        new Promise<[VoiceCall, any]>((_, reject) =>
+          setTimeout(() => reject(new Error('Event timeout')), 5000)
+        ),
+      ]);
+      expect(participant.id).toBe('+15552222222');
+      expect(participant.joined).toBe(false);
     });
   });
 
@@ -441,7 +489,7 @@ describe('SignalVoiceCallHandler', () => {
     it('should monitor call duration and auto-hangup', async () => {
       handler = new SignalVoiceCallHandler(
         rpcOptions,
-        { maxDurationMs: 200 }, // 200ms max
+        { maxDurationMs: 500 }, // 500ms max
         mockRuntime,
       );
 
@@ -465,8 +513,13 @@ describe('SignalVoiceCallHandler', () => {
 
       vi.mocked(signalRpcRequest).mockResolvedValueOnce({}); // endCall RPC
 
-      // Wait for auto-hangup
-      const endedCall = await endedPromise;
+      // Wait for auto-hangup with timeout
+      const endedCall = await Promise.race([
+        endedPromise,
+        new Promise<VoiceCall>((_, reject) =>
+          setTimeout(() => reject(new Error('Auto-hangup timeout')), 7000)
+        ),
+      ]);
       expect(endedCall.state).toBe('ended');
     }, 10000); // 10 second timeout for test
   });

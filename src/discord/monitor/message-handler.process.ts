@@ -18,7 +18,7 @@ import { danger, logVerbose, shouldLogVerbose } from "../../globals.js";
 import { buildAgentSessionKey } from "../../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../../routing/session-key.js";
 import { truncateUtf16Safe } from "../../utils.js";
-import { reactMessageDiscord, removeReactionDiscord } from "../send.js";
+import { reactMessageDiscord, removeReactionDiscord, sendMessageDiscord } from "../send.js";
 import { normalizeDiscordSlug } from "./allow-list.js";
 import { formatDiscordUserTag, resolveTimestampMs } from "./format.js";
 import type { DiscordMessagePreflightContext } from "./message-handler.preflight.js";
@@ -31,6 +31,7 @@ import { buildDirectLabel, buildGuildLabel, resolveReplyContext } from "./reply-
 import { deliverDiscordReply } from "./reply-delivery.js";
 import { resolveDiscordAutoThreadReplyPlan, resolveDiscordThreadStarter } from "./threading.js";
 import { sendTyping } from "./typing.js";
+import { handleDiscordVoiceMessage, hasVoiceAttachment } from "../voice/integration.js";
 
 export async function processDiscordMessage(ctx: DiscordMessagePreflightContext) {
   const {
@@ -75,6 +76,67 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     route,
     commandAuthorized,
   } = ctx;
+
+  // Handle voice messages first (if present)
+  if (hasVoiceAttachment(message)) {
+    const voiceHandled = await handleDiscordVoiceMessage({
+      message,
+      voiceConfig: discordConfig?.voice,
+      providersConfig: cfg.voice as any, // Type cast - config validation happens in registry
+      guildId: guildInfo?.id,
+      channelId: message.channelId,
+      userId: author.id,
+      replyFn: async (transcribedText: string) => {
+        // For now, we'll just echo back a simple response
+        // In production, you'd wire this into your full agent pipeline
+        // by calling dispatchReplyFromConfig with the transcribed text
+        return `I heard you say: "${transcribedText}". Voice message support is active!`;
+      },
+      sendFn: async ({ voiceBuffer, text, voiceFormat, replyToId }) => {
+        // Send voice and/or text response to Discord
+        if (voiceBuffer && voiceFormat) {
+          // Send voice as attachment
+          const { saveMediaBuffer } = await import("../../media/store.js");
+          const saved = await saveMediaBuffer(
+            voiceBuffer,
+            voiceFormat === "mp3" ? "audio/mpeg" : "audio/ogg",
+            "outbound",
+            mediaMaxBytes,
+          );
+
+          await sendMessageDiscord(
+            isDirectMessage ? `user:${author.id}` : `channel:${message.channelId}`,
+            text || " ", // Discord requires content or media, use space if no text
+            {
+              token,
+              accountId,
+              rest: client.rest,
+              mediaUrl: saved.path,
+              replyTo: replyToId,
+            },
+          );
+        } else if (text) {
+          // Send text-only response
+          await sendMessageDiscord(
+            isDirectMessage ? `user:${author.id}` : `channel:${message.channelId}`,
+            text,
+            {
+              token,
+              accountId,
+              rest: client.rest,
+              replyTo: replyToId,
+            },
+          );
+        }
+      },
+    });
+
+    if (voiceHandled) {
+      // Voice message was successfully handled, skip regular text processing
+      logVerbose(`discord: voice message handled for ${message.id}`);
+      return;
+    }
+  }
 
   const mediaList = await resolveMediaList(message, mediaMaxBytes);
   const text = messageText;

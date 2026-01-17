@@ -30,6 +30,11 @@
   ],
   "author": "Clawdbot Contributors",
   "license": "MIT",
+  "clawdbot": {
+    "extensions": [
+      "dist/index.js"
+    ]
+  },
   "devDependencies": {
     "vitest": "^4.0.0"
   }

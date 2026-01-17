@@ -175,13 +175,19 @@ export class ChatterboxTTSPlugin extends BaseTTSPlugin {
       if (result.success) {
         this.dockerInitialized = true;
         this.dockerHealth = {
-          port: result.port,
+          port: result.assignedPort || result.containerPort,
           volumePath: result.volumePath,
           containerId: result.containerId,
         };
       }
 
-      return result;
+      return {
+        success: result.success,
+        port: result.assignedPort || result.containerPort,
+        volumePath: result.volumePath,
+        containerId: result.containerId,
+        error: result.error,
+      };
     } catch (error) {
       return {
         success: false,
@@ -205,7 +211,7 @@ export class ChatterboxTTSPlugin extends BaseTTSPlugin {
       this.dockerHealth = {
         running: health.running,
         healthy: health.healthy,
-        port: health.port,
+        port: health.assignedPort || health.containerPort,
         containerId: health.containerId,
       };
       return health.healthy;

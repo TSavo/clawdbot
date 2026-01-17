@@ -20,14 +20,15 @@ import type { AudioBuffer } from '../voice-providers/executor.js';
 function createTestAudioBuffer(duration = 1000, sampleRate = 16000): AudioBuffer {
   const samples = Math.floor((duration * sampleRate) / 1000);
   const data = new Uint8Array(samples * 2); // 16-bit PCM
+  const int16 = new Int16Array(data.buffer);
 
   // Fixed seed for test reproducibility (not random)
-  // Use a deterministic sine wave pattern
+  // Use a deterministic sine wave pattern with proper 16-bit amplitude
   for (let i = 0; i < samples; i++) {
-    // Sine wave: deterministic, repeats every test
-    const sample = Math.floor(128 + 127 * Math.sin((i / samples) * 2 * Math.PI * 5));
-    data[i * 2] = sample & 0xFF;
-    data[i * 2 + 1] = (sample >> 8) & 0xFF;
+    // Sine wave at full amplitude: -32768 to 32767
+    // Deterministic, repeats every test
+    const sample = Math.floor(32000 * Math.sin((i / samples) * 2 * Math.PI * 5));
+    int16[i] = sample;
   }
 
   return {

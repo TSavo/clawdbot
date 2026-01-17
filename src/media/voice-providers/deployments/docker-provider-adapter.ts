@@ -145,15 +145,18 @@ export class PortAllocator {
    * Allocate a port, avoiding conflicts with already-used ports
    */
   allocatePort(preferredPort?: number): number {
-    if (preferredPort && !this.allocatedPorts.has(preferredPort)) {
+    let startPort = this.minPort;
+
+    // If preferred port is available, use it
+    if (preferredPort !== undefined && !this.allocatedPorts.has(preferredPort)) {
       this.allocatedPorts.add(preferredPort);
       return preferredPort;
     }
 
     // If preferred port is taken, start search from preferred + 1
-    const startPort = preferredPort && this.allocatedPorts.has(preferredPort)
-      ? preferredPort + 1
-      : this.minPort;
+    if (preferredPort !== undefined && this.allocatedPorts.has(preferredPort)) {
+      startPort = preferredPort + 1;
+    }
 
     for (let port = startPort; port <= this.maxPort; port++) {
       if (!this.allocatedPorts.has(port)) {

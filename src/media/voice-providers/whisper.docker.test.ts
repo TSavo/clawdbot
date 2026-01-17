@@ -36,41 +36,55 @@ function createTestAudioBuffer(
   };
 }
 
+/**
+ * Helper to create a mock exec async function
+ */
+function createMockExecAsync(
+  implementation: (cmd: string) => { stdout: string; stderr?: string } | null,
+) {
+  return async (cmd: string) => {
+    const result = implementation(cmd);
+    if (!result) {
+      throw new Error('Command execution failed');
+    }
+    return result;
+  };
+}
+
 describe('WhisperDockerDeploymentHandler', () => {
   let handler: any;
-  let mockExecSync: any;
+  let mockExecAsync: any;
+  let commandResponses: Map<string, string>;
 
   beforeEach(async () => {
     // Clear all mocks before each test
     vi.clearAllMocks();
 
-    // Create a shared mock exec function for this test
-    mockExecSync = vi.fn();
-    let callCount = 0;
+    // Setup command responses
+    commandResponses = new Map();
 
-    // Mock promisify to return a function that handles our mocked exec
-    vi.mocked(promisify).mockImplementation((fn: any) => {
-      return async (...args: any[]) => {
-        return new Promise((resolve, reject) => {
-          // Call the original function with a callback
-          const callback = (error: Error | null, stdout: string, stderr: string) => {
-            if (error) {
-              reject(error);
-            } else {
-              resolve({ stdout, stderr });
-            }
-          };
-
-          // Invoke the mocked exec
-          mockExecSync(...args, callback);
-        });
-      };
+    // Create a mock exec async function
+    mockExecAsync = vi.fn(async (cmd: string) => {
+      const response = commandResponses.get(cmd);
+      if (response === undefined) {
+        // Check for partial matches
+        for (const [key, value] of commandResponses) {
+          if (cmd.includes(key.split(' ')[0])) {
+            return { stdout: value, stderr: '' };
+          }
+        }
+        throw new Error(`Unexpected command: ${cmd}`);
+      }
+      return { stdout: response, stderr: '' };
     });
 
-    // Mock exec to record calls and use our test callbacks
-    vi.mocked(exec).mockImplementation((...args: any[]) => {
-      const cb = args[args.length - 1];
-      mockExecSync(...args.slice(0, -1), cb);
+    // Mock promisify
+    vi.mocked(promisify).mockImplementation((fn: any) => {
+      return mockExecAsync;
+    });
+
+    // Mock exec - just return a dummy object with event methods
+    vi.mocked(exec).mockImplementation(() => {
       return { kill: vi.fn(), on: vi.fn() } as any;
     });
 
@@ -89,10 +103,12 @@ describe('WhisperDockerDeploymentHandler', () => {
   afterEach(async () => {
     try {
       if (handler?.getContainerId?.()) {
-        // Mock exec for cleanup operations
-        mockExecSync.mockImplementation((cmd: string, cb: any) => {
-          setImmediate(() => cb(null, '', ''));
-        });
+        commandResponses.set('docker stop test-whisper', '');
+        commandResponses.set('docker rm test-whisper', '');
+        commandResponses.set(
+          'docker ps -a --filter "name=test-whisper" --format "{{.ID}}|{{.Status}}"',
+          '',
+        );
         await handler.stop();
       }
     } catch (error) {
@@ -101,9 +117,10 @@ describe('WhisperDockerDeploymentHandler', () => {
   });
 
   describe('Initialization', () => {
-    it('should initialize with default configuration', () => {
-      const { WhisperDockerDeploymentHandler } = require('./whisper.docker.js');
-      const h = new WhisperDockerDeploymentHandler();
+    it('should initialize with default configuration', async () => {
+      // Import fresh after mocks are in place
+      const module = await import('./whisper.docker.js');
+      const h = new module.WhisperDockerDeploymentHandler();
       const config = h.getConfig();
 
       expect(config.port).toBe(8000);
@@ -133,27 +150,25 @@ describe('WhisperDockerDeploymentHandler', () => {
 
   describe('Port Discovery', () => {
     it('should discover assigned port after container start', async () => {
-      let execCount = 0;
+      // Setup mock responses
+      commandResponses.set(
+        'docker pull fedirz/faster-whisper-server:latest-cpu',
+        'Successfully pulled image\n',
+      );
+      commandResponses.set('docker run -d --name test-whisper -p 8000:8000 -e WHISPER_MODEL=base fedirz/faster-whisper-server:latest-cpu', 'container-id-123\n');
+      commandResponses.set(
+        'docker ps -a --filter "name=test-whisper" --format "{{.ID}}|{{.Status}}"',
+        'container-id-123|Up 2 seconds\n',
+      );
+      commandResponses.set(
+        "docker inspect container-id-123 --format='{{range .NetworkSettings.Ports}}{{index (split (index (split .[] \"/\") 0) \":\") 1}}{{end}}'",
+        '32768\n',
+      );
 
-      mockExecSync.mockImplementation((cmd: string, cb: any) => {
-        execCount++;
-
-        if (execCount === 1) {
-          // ensureImageAvailable - pull image
-          setImmediate(() => cb(null, 'Successfully pulled image\n', ''));
-        } else if (execCount === 2) {
-          // createAndStartContainer - docker run
-          setImmediate(() => cb(null, 'container-id-123\n', ''));
-        } else if (execCount === 3) {
-          // getContainerStatus
-          setImmediate(() => cb(null, 'Up 2 seconds\n', ''));
-        } else if (execCount === 4) {
-          // getAssignedPort - docker inspect
-          setImmediate(() => cb(null, '32768\n', ''));
-        } else if (execCount === 5) {
-          // waitForApiReady - health check
-          setImmediate(() => cb(null, '{"status":"ok"}\n', ''));
-        }
+      // Mock fetch for health check
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: 'ok' }),
       });
 
       await handler.start();

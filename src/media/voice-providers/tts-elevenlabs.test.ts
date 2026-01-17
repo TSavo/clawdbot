@@ -125,12 +125,12 @@ describe('ElevenLabsExecutor', () => {
       const result = await executor.synthesize('Hello world');
 
       // Required response fields
-      expect(result).toHaveProperty('audio');
+      expect(result).toHaveProperty('data');
       expect(result).toHaveProperty('duration');
 
       // Validate types and values
-      expect(result.audio).toBeInstanceOf(Uint8Array);
-      expect(result.audio.length).toBeGreaterThan(0);
+      expect(result.data).toBeInstanceOf(Uint8Array);
+      expect(result.data.length).toBeGreaterThan(0);
       expect(typeof result.duration).toBe('number');
       expect(result.duration).toBeGreaterThan(0);
     });
@@ -147,8 +147,8 @@ describe('ElevenLabsExecutor', () => {
       const result = await executor.synthesize('Hello world');
 
       // Validate audio structure
-      expect(result.audio).toBeInstanceOf(Uint8Array);
-      expect(result.audio.length).toBeGreaterThan(0);
+      expect(result.data).toBeInstanceOf(Uint8Array);
+      expect(result.data.length).toBeGreaterThan(0);
 
       // Verify duration is in valid range
       expect(result.duration).toBeGreaterThanOrEqual(0.5);
@@ -158,13 +158,13 @@ describe('ElevenLabsExecutor', () => {
     it('should return all required response fields', async () => {
       const result = await executor.synthesize('Test text');
 
-      const requiredFields = ['audio', 'duration'];
+      const requiredFields = ['data', 'duration'];
       for (const field of requiredFields) {
         expect(result).toHaveProperty(field);
       }
 
       // Validate field types
-      expect(result.audio instanceof Uint8Array).toBe(true);
+      expect(result.data instanceof Uint8Array).toBe(true);
       expect(typeof result.duration).toBe('number');
     });
 
@@ -177,9 +177,9 @@ describe('ElevenLabsExecutor', () => {
 
       const result = await executor.synthesize('Hola mundo', options);
 
-      expect(result).toHaveProperty('audio');
+      expect(result).toHaveProperty('data');
       expect(result).toHaveProperty('duration');
-      expect(result.audio.length).toBeGreaterThan(0);
+      expect(result.data.length).toBeGreaterThan(0);
     });
 
     it('should throw error on empty text', async () => {
@@ -208,14 +208,14 @@ describe('ElevenLabsExecutor', () => {
       const result = await executor.synthesize('Hello world');
 
       // Audio should be PCM 16-bit
-      expect(result.audio.length).toBeGreaterThan(0);
-      expect(result.audio.length % 2).toBe(0); // PCM 16-bit requires even byte count
+      expect(result.data.length).toBeGreaterThan(0);
+      expect(result.data.length % 2).toBe(0); // PCM 16-bit requires even byte count
 
       // Duration should be reasonable for audio data
       const expectedMinBytes = 24000 * result.duration * 2 * 0.8; // 80% tolerance
       const expectedMaxBytes = 24000 * result.duration * 2 * 1.2; // 120% tolerance
-      expect(result.audio.length).toBeGreaterThan(expectedMinBytes);
-      expect(result.audio.length).toBeLessThan(expectedMaxBytes);
+      expect(result.data.length).toBeGreaterThan(expectedMinBytes);
+      expect(result.data.length).toBeLessThan(expectedMaxBytes);
     });
   });
 
@@ -417,8 +417,8 @@ describe('ElevenLabsExecutor', () => {
     it('should validate audio buffer is binary data', async () => {
       const result = await executor.synthesize('Test');
 
-      expect(result.audio).toBeInstanceOf(Uint8Array);
-      expect(result.audio.buffer).toBeInstanceOf(ArrayBuffer);
+      expect(result.data).toBeInstanceOf(Uint8Array);
+      expect(result.data.buffer).toBeInstanceOf(ArrayBuffer);
     });
 
     it('should calculate reasonable duration from audio size', async () => {
@@ -442,7 +442,7 @@ describe('ElevenLabsExecutor', () => {
 
       const result = await executor.synthesize('Long text');
 
-      expect(result.audio.length).toBe(240000);
+      expect(result.data.length).toBe(240000);
       expect(result.duration).toBeGreaterThan(0);
     });
   });

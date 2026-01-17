@@ -68,15 +68,14 @@ export class OpusCodec extends EventEmitter {
 
     // Try @discordjs/opus first (native, faster)
     try {
-      const OpusEngine = await import('@discordjs/opus');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const encoder = (OpusEngine as any).default || OpusEngine;
-      this.encoder = new encoder.OpusEncoder(
+      const { OpusEncoder } = (await import('@discordjs/opus')) as any;
+      this.encoder = new OpusEncoder(
         this.config.sampleRate,
         this.config.channels,
       );
       // @discordjs/opus provides both encoder and decoder via OpusEncoder
-      this.decoder = new encoder.OpusEncoder(
+      this.decoder = new OpusEncoder(
         this.config.sampleRate,
         this.config.channels,
       );
@@ -85,18 +84,19 @@ export class OpusCodec extends EventEmitter {
     } catch (error) {
       // Fallback to opusscript (pure JS, slower)
       try {
-        const OpusScriptModule = await import('opusscript');
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const OpusScript = (OpusScriptModule as any).default || OpusScriptModule;
+        const opusModule = (await import('opusscript')) as any;
+        // opusscript exports the class as default
+        const OpusScript = opusModule.default || opusModule;
         const app =
           this.config.application === 'voip'
-            ? OpusScript.Application.VOIP
+            ? opusModule.Application.VOIP
             : this.config.application === 'audio'
-              ? OpusScript.Application.AUDIO
-              : OpusScript.Application.RESTRICTED_LOWDELAY;
+              ? opusModule.Application.AUDIO
+              : opusModule.Application.RESTRICTED_LOWDELAY;
 
-        this.encoder = new OpusScript.default(this.config.sampleRate, this.config.channels, app);
-        this.decoder = new OpusScript.default(this.config.sampleRate, this.config.channels, app);
+        this.encoder = new OpusScript(this.config.sampleRate, this.config.channels, app);
+        this.decoder = new OpusScript(this.config.sampleRate, this.config.channels, app);
         this.backend = 'opusscript';
         this.emit('backend', 'opusscript');
       } catch (fallbackError) {

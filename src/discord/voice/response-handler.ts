@@ -18,6 +18,7 @@ import { getChildLogger } from '../../logging.js';
 import type { RuntimeEnv } from '../../runtime.js';
 import type { CartesiaExecutor } from '../../media/voice-providers/cartesia.js';
 import type { AudioBuffer } from '../../media/voice-providers/executor.js';
+import { getAudioEncoder } from '../../media/codecs/audio-encoder.js';
 import {
   type DiscordVoiceConfig,
   type VoiceResponseType,
@@ -105,43 +106,30 @@ async function convertToMP3(
     return Buffer.from(audioBuffer.data);
   }
 
-  // Fallback: return raw audio data converted to Buffer
-  // In production, use proper MP3 encoding library like libmp3lame via wasm
   try {
-    const data = audioBuffer.data as any;
+    // Convert AudioBuffer.data (Uint8Array) to Node.js Buffer
+    const pcmBuffer = Buffer.from(audioBuffer.data);
 
-    if (typeof data === 'string') {
-      return Buffer.from(data, 'utf-8');
-    }
+    // Use the audio encoder to convert PCM to MP3
+    const encoder = getAudioEncoder();
+    const mp3Buffer = await encoder.encodeToMP3(
+      pcmBuffer,
+      audioBuffer.sampleRate,
+      bitrate,
+      audioBuffer.channels,
+    );
 
-    if (Buffer.isBuffer(data)) {
-      return data;
-    }
-
-    // Check for Uint8Array and ArrayBuffer
-    if (typeof data === 'object' && data !== null) {
-      if (ArrayBuffer.isView(data)) {
-        return Buffer.from(data as any);
-      }
-      if (data instanceof ArrayBuffer || data.constructor.name === 'ArrayBuffer') {
-        return Buffer.from(data as any);
-      }
-      if ((data as any).buffer instanceof ArrayBuffer) {
-        return Buffer.from(data as any);
-      }
-      return Buffer.from(data as any);
-    }
-
-    return Buffer.alloc(0);
+    return mp3Buffer;
   } catch (error) {
     logger.error(
       {
         error: error instanceof Error ? error.message : String(error),
+        format: audioBuffer.format,
+        sampleRate: audioBuffer.sampleRate,
       },
-      'Failed to convert audio to MP3, returning raw PCM',
+      'Failed to convert audio to MP3',
     );
-    // Fallback: return empty buffer
-    return Buffer.alloc(0);
+    throw new Error(`MP3 conversion failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -152,43 +140,30 @@ async function convertToOGG(
   audioBuffer: AudioBuffer,
   bitrate: number,
 ): Promise<Buffer> {
-  // Fallback: return raw audio data converted to Buffer
-  // In production, use proper OGG encoding library
   try {
-    const data = audioBuffer.data as any;
+    // Convert AudioBuffer.data (Uint8Array) to Node.js Buffer
+    const pcmBuffer = Buffer.from(audioBuffer.data);
 
-    if (typeof data === 'string') {
-      return Buffer.from(data, 'utf-8');
-    }
+    // Use the audio encoder to convert PCM to OGG/Opus
+    const encoder = getAudioEncoder();
+    const oggBuffer = await encoder.encodeToOGG(
+      pcmBuffer,
+      audioBuffer.sampleRate,
+      bitrate,
+      audioBuffer.channels,
+    );
 
-    if (Buffer.isBuffer(data)) {
-      return data;
-    }
-
-    // Check for Uint8Array and ArrayBuffer
-    if (typeof data === 'object' && data !== null) {
-      if (ArrayBuffer.isView(data)) {
-        return Buffer.from(data as any);
-      }
-      if (data instanceof ArrayBuffer || data.constructor.name === 'ArrayBuffer') {
-        return Buffer.from(data as any);
-      }
-      if ((data as any).buffer instanceof ArrayBuffer) {
-        return Buffer.from(data as any);
-      }
-      return Buffer.from(data as any);
-    }
-
-    return Buffer.alloc(0);
+    return oggBuffer;
   } catch (error) {
     logger.error(
       {
         error: error instanceof Error ? error.message : String(error),
+        format: audioBuffer.format,
+        sampleRate: audioBuffer.sampleRate,
       },
-      'Failed to convert audio to OGG, returning raw PCM',
+      'Failed to convert audio to OGG',
     );
-    // Fallback: return empty buffer
-    return Buffer.alloc(0);
+    throw new Error(`OGG conversion failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
