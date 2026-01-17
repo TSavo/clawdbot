@@ -150,7 +150,7 @@ describe('CartesiaExecutor WebSocket Streaming', () => {
       expect(chunks.length).toBeGreaterThan(0);
       expect(chunks[0].data).toBeDefined();
       expect(chunks[0].data.length).toBeGreaterThan(0);
-      expect(chunks[0].format).toBe('pcm_16');
+      expect(chunks[0].format).toBe('pcm16');
       expect(chunks[0].sampleRate).toBe(16000);
       expect(chunks[0].channels).toBe(1);
     });
@@ -417,6 +417,7 @@ describe('CartesiaExecutor WebSocket Streaming', () => {
       (globalThis as any).WebSocket = class extends MockWebSocket {
         send(data: string) {
           // Send nothing - simulate unresponsive server
+          // This means no audio chunks and no done message
         }
       };
 
@@ -427,12 +428,16 @@ describe('CartesiaExecutor WebSocket Streaming', () => {
         },
       });
 
-      await expect(async () => {
+      // The test should timeout after 10 seconds (AudioBuffer timeout in synthesizeStream)
+      // Set vitest timeout to allow for this
+      const promise = (async () => {
         for await (const chunk of executor.synthesizeStream(textStream)) {
           // Should timeout waiting for chunks
         }
-      }).rejects.toThrow();
-    });
+      })();
+
+      await expect(promise).rejects.toThrow('Audio chunk timeout');
+    }, 15000); // Give it 15 seconds to allow the 10s timeout to trigger
 
     it('should handle connection failures', async () => {
       (globalThis as any).WebSocket = class {
