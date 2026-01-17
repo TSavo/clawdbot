@@ -561,7 +561,7 @@ export class CallManager {
     const callRecord: CallRecord = {
       callId,
       providerCallId,
-      provider: this.provider?.name || "twilio",
+      provider: this.primaryProvider?.name || "twilio",
       direction: "inbound",
       state: "ringing",
       from,
@@ -726,11 +726,13 @@ export class CallManager {
 
     if (!initialMessage) return;
 
-    if (!this.provider || !call.providerCallId) return;
+    // Get provider for this call's platform
+    const provider = this.getProviderForPlatform(call.provider);
+    if (!provider || !call.providerCallId) return;
 
     // Twilio has provider-specific state for speaking (<Say> fallback) and can
     // fail for inbound calls; keep existing Twilio behavior unchanged.
-    if (this.provider.name === "twilio") return;
+    if (provider.name === "twilio") return;
 
     void this.speakInitialMessage(call.providerCallId);
   }
