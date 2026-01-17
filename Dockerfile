@@ -43,14 +43,14 @@ RUN pnpm ui:build
 # Voice provider configuration is set via environment variables in docker-compose
 # Whisper (STT) and Kokoro (TTS) enabled in system mode by default
 
-# Create application user (non-root) for security
-RUN useradd -m -u 1000 node || true
-USER node
-
 ENV NODE_ENV=production
 
 # Health check for the gateway daemon
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:18789/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))" || exit 1
+  CMD curl -sf http://localhost:18789/ || exit 1
 
-CMD ["node", "dist/index.js"]
+# Create application user (non-root) for security
+RUN useradd -m -u 1000 node || true
+USER node
+
+CMD ["node", "dist/index.js", "gateway-daemon", "--bind", "lan", "--port", "18789"]
