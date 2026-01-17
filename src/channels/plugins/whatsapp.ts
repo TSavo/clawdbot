@@ -33,6 +33,10 @@ import {
 import { collectWhatsAppStatusIssues } from "./status-issues/whatsapp.js";
 import type { ChannelMessageActionName, ChannelPlugin } from "./types.js";
 import { resolveWhatsAppHeartbeatRecipients } from "./whatsapp-heartbeat.js";
+import { shouldHandleWhatsAppVoiceMessage } from "../../whatsapp/voice/integration.js";
+// Twilio call provider plugin is initialized via voice-call extension
+// See extensions/voice-call/src/plugins/twilio/twilio-provider.ts
+// Inbound call webhooks are routed through CallManager based on platform
 
 const meta = getChatChannelMeta("whatsapp");
 

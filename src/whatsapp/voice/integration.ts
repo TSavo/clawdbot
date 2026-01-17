@@ -13,11 +13,21 @@
  */
 
 import type { RuntimeEnv } from '../../runtime.js';
-import { WhatsAppVoiceMessageHandler, type WhatsAppVoiceFile } from './message-handler.js';
-import { WhatsAppVoiceResponseHandler } from './response-handler.js';
 import { logVerbose } from '../../globals.js';
 import { VoiceProviderRegistry } from '../../media/voice-providers/registry.js';
 import type { VoiceProvidersConfig } from '../../config/zod-schema.voice-providers.js';
+
+export interface WhatsAppVoiceFile {
+  id: string;
+  mimetype: string;
+  timestamp: number;
+}
+
+export interface WhatsAppVoiceContext {
+  audioPath: string;
+  format: string;
+  sizeBytes: number;
+}
 
 /**
  * Check if a WhatsApp message contains audio attachment
@@ -88,36 +98,27 @@ export function shouldHandleWhatsAppVoiceMessage(message: {
  */
 export async function handleWhatsAppVoiceMessage(params: {
   message: { audio?: { media_id?: string; mime_type?: string } };
-  apiToken: string;
-  businessAccountId: string;
-  phoneNumber?: string;
-  providersConfig?: VoiceProvidersConfig;
+  apiClient: any; // WhatsApp Cloud API client (or methods)
   runtime?: RuntimeEnv;
+  providersConfig?: VoiceProvidersConfig;
   /**
    * Function to generate reply text from transcribed message
    * Should return the response text to be sent
    */
   replyFn: (transcribedText: string) => Promise<string>;
   /**
-   * Function to send the final message(s) to WhatsApp
-   * Receives text and/or voice response
+   * Function to send the final message to WhatsApp
+   * Receives text response
    */
-  sendFn: (params: { voiceBuffer?: Buffer; text?: string }) => Promise<void>;
-  /**
-   * Enable voice response synthesis (optional)
-   */
-  enableVoiceResponse?: boolean;
+  sendFn: (params: { text: string }) => Promise<void>;
 }): Promise<boolean> {
   const {
     message,
-    apiToken,
-    businessAccountId,
-    phoneNumber,
-    providersConfig,
+    apiClient,
     runtime,
+    providersConfig,
     replyFn,
     sendFn,
-    enableVoiceResponse,
   } = params;
 
   // Check for voice file
@@ -137,7 +138,6 @@ export async function handleWhatsAppVoiceMessage(params: {
   }
 
   try {
-    // Create message handler to download audio
     const effectiveRuntime: RuntimeEnv = runtime || {
       log: console.log,
       error: console.error,
@@ -145,25 +145,23 @@ export async function handleWhatsAppVoiceMessage(params: {
         throw new Error(`exit ${code}`);
       },
     };
-    const messageHandler = new WhatsAppVoiceMessageHandler(
-      apiToken,
-      businessAccountId,
-      effectiveRuntime,
-    );
 
-    // Download the audio file from WhatsApp Cloud API
-    const voiceContext = await messageHandler.downloadAudioFile(voiceFile);
+    // Download audio using WhatsApp Cloud API
+    const audioBuffer = await downloadWhatsAppAudio(apiClient, voiceFile.id);
 
     logVerbose(
-      `whatsapp-voice: downloaded audio (format: ${voiceContext.format}, size: ${voiceContext.sizeBytes} bytes)`,
+      `whatsapp-voice: downloaded audio (size: ${audioBuffer.length} bytes)`,
     );
 
     // Get STT provider with fallback
     const transcriber = await registry.getTranscriber();
 
+    // Detect format from mime type
+    const detectedFormat = detectAudioFormat(voiceFile.mimetype);
+
     // Transcribe the audio
-    const result = await transcriber.transcribe(voiceContext.audioPath as any, {
-      format: voiceContext.format,
+    const result = await transcriber.transcribe(audioBuffer as any, {
+      format: detectedFormat as any,
     });
 
     // Extract text from transcription result
@@ -176,7 +174,6 @@ export async function handleWhatsAppVoiceMessage(params: {
 
     if (!transcribedText) {
       logVerbose('whatsapp-voice: empty transcription, skipping');
-      await messageHandler.cleanup(voiceContext);
       return false;
     }
 
@@ -186,50 +183,21 @@ export async function handleWhatsAppVoiceMessage(params: {
     const responseText = await replyFn(transcribedText);
     if (!responseText) {
       logVerbose('whatsapp-voice: empty response text, skipping');
-      await messageHandler.cleanup(voiceContext);
       return false;
     }
 
-    logVerbose(`whatsapp-voice: sending response`);
+    logVerbose(`whatsapp-voice: sending text response`);
 
-    // Check if voice response is enabled
-    if (enableVoiceResponse && phoneNumber) {
-      // Try to send voice response
-      try {
-        const responseHandler = new WhatsAppVoiceResponseHandler(
-          apiToken,
-          businessAccountId,
-          effectiveRuntime,
-        );
-
-        await responseHandler.sendVoiceResponse({
-          phoneNumber,
-          text: responseText,
-          enableVoiceResponse: true,
-        });
-      } catch (voiceError) {
-        // Voice synthesis failed, fallback to text
-        logVerbose(
-          `whatsapp-voice: voice synthesis failed, falling back to text: ${voiceError instanceof Error ? voiceError.message : String(voiceError)}`,
-        );
-        await sendFn({ text: responseText });
-      }
-    } else {
-      // Send text-only response
-      await sendFn({ text: responseText });
-    }
-
-    // Cleanup
-    await messageHandler.cleanup(voiceContext);
+    // Send text response
+    await sendFn({ text: responseText });
 
     return true;
   } catch (error) {
-    // Log error and fall back to text-only processing
     logVerbose(
       `whatsapp-voice: failed to handle voice message: ${error instanceof Error ? error.message : String(error)}`,
     );
 
-    // Attempt text fallback if transcription succeeded but response failed
+    // Attempt fallback text response
     try {
       await sendFn({
         text: 'Sorry, I encountered an error processing the voice message.',
@@ -245,4 +213,42 @@ export async function handleWhatsAppVoiceMessage(params: {
     // Cleanup registry
     await registry.shutdown();
   }
+}
+
+/**
+ * Download audio from WhatsApp Cloud API
+ */
+async function downloadWhatsAppAudio(
+  apiClient: any,
+  mediaId: string,
+): Promise<Buffer> {
+  // If client has a downloadMedia method, use it
+  if (apiClient && typeof apiClient.downloadMedia === 'function') {
+    return await apiClient.downloadMedia(mediaId);
+  }
+
+  // Otherwise, try to get media URL and fetch
+  if (apiClient && typeof apiClient.getMediaUrl === 'function') {
+    const url = await apiClient.getMediaUrl(mediaId);
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to download audio: ${response.statusText}`);
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+
+  throw new Error('API client does not support media download');
+}
+
+/**
+ * Detect audio format from MIME type
+ */
+function detectAudioFormat(mimeType: string): 'ogg' | 'mp3' | 'wav' | 'aac' {
+  if (mimeType.includes('ogg') || mimeType === 'audio/ogg') return 'ogg';
+  if (mimeType.includes('mp3') || mimeType === 'audio/mpeg') return 'mp3';
+  if (mimeType.includes('wav')) return 'wav';
+  if (mimeType.includes('aac')) return 'aac';
+  // Default to ogg for WhatsApp audio messages
+  return 'ogg';
 }

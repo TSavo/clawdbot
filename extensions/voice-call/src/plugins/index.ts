@@ -21,6 +21,29 @@ export { PluginRegistryError } from "./interfaces.js";
 // Plugin registry
 export { getPluginRegistry, PluginRegistry } from "./registry.js";
 
+// Platform call provider registry
+export {
+  CallProviderRegistry,
+  initializeAllCallProviders,
+  getProviderMetadata,
+} from "./plugin-registry.js";
+export type {
+  PluginRegistryConfig,
+} from "./plugin-registry.js";
+
+// Platform-specific call providers
+export { DiscordCallProviderPlugin } from "./discord/provider.js";
+export type { DiscordCallProviderConfig } from "./discord/provider.js";
+
+export { TelegramCallProviderPlugin } from "./telegram/provider.js";
+export type { TelegramCallProviderConfig } from "./telegram/provider.js";
+
+export { SignalCallProviderPlugin } from "./signal/provider.js";
+export type { SignalCallProviderConfig } from "./signal/provider.js";
+
+export { TwilioCallProviderPlugin } from "./twilio/twilio-provider.js";
+export type { TwilioPluginConfig } from "./twilio/twilio-config.js";
+
 // Built-in STT plugins
 export {
   OpenAIRealtimeSTTProvider,

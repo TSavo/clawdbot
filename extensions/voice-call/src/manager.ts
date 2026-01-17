@@ -21,12 +21,21 @@ import { escapeXml, mapVoiceToPolly } from "./voice-mapping.js";
 
 /**
  * Manages voice calls: state machine, persistence, and provider coordination.
+ *
+ * Supports multiple platform-specific call providers:
+ * - Discord (voice channels)
+ * - Telegram (group calls)
+ * - Signal (direct calls)
+ * - Twilio (phone calls)
+ *
+ * Routes incoming calls to the correct provider based on platform.
  */
 export class CallManager {
   private activeCalls = new Map<CallId, CallRecord>();
   private providerCallIdMap = new Map<string, CallId>(); // providerCallId -> internal callId
   private processedEventIds = new Set<string>();
-  private provider: VoiceCallProvider | null = null;
+  private providers: Map<string, VoiceCallProvider> = new Map(); // platform -> provider
+  private primaryProvider: VoiceCallProvider | null = null; // fallback for legacy code
   private config: VoiceCallConfig;
   private storePath: string;
   private webhookUrl: string | null = null;
@@ -53,9 +62,13 @@ export class CallManager {
 
   /**
    * Initialize the call manager with a provider.
+   *
+   * For backward compatibility, also supports single provider initialization.
+   * Use registerProvider() for multi-provider setup.
    */
   initialize(provider: VoiceCallProvider, webhookUrl: string): void {
-    this.provider = provider;
+    this.primaryProvider = provider;
+    this.providers.set(provider.name, provider);
     this.webhookUrl = webhookUrl;
 
     // Ensure store directory exists
@@ -66,10 +79,41 @@ export class CallManager {
   }
 
   /**
-   * Get the current provider.
+   * Register a call provider for a specific platform.
+   * Allows unified call routing through multiple providers.
+   *
+   * @param platform - Platform name (discord, telegram, signal, twilio)
+   * @param provider - VoiceCallProvider implementation
+   */
+  registerProvider(platform: string, provider: VoiceCallProvider): void {
+    this.providers.set(platform, provider);
+    if (!this.primaryProvider) {
+      this.primaryProvider = provider;
+    }
+  }
+
+  /**
+   * Get a provider by platform name.
+   * @param platform - Platform name
+   * @returns VoiceCallProvider or undefined if not registered
+   */
+  getProviderForPlatform(platform: string): VoiceCallProvider | null {
+    return this.providers.get(platform) ?? null;
+  }
+
+  /**
+   * Get the primary provider (for backward compatibility).
    */
   getProvider(): VoiceCallProvider | null {
-    return this.provider;
+    return this.primaryProvider;
+  }
+
+  /**
+   * Get all registered providers.
+   * @returns Array of registered providers
+   */
+  getAllProviders(): VoiceCallProvider[] {
+    return Array.from(this.providers.values());
   }
 
   /**
@@ -88,7 +132,14 @@ export class CallManager {
       typeof options === "string" ? { message: options } : (options ?? {});
     const initialMessage = opts.message;
     const mode = opts.mode ?? this.config.outbound.defaultMode;
-    if (!this.provider) {
+    const platformOpt = (opts as unknown as { platform?: string }).platform;
+
+    // Select provider: use platform if specified, otherwise use primary provider
+    const provider = platformOpt
+      ? this.getProviderForPlatform(platformOpt)
+      : this.primaryProvider;
+
+    if (!provider) {
       return { callId: "", success: false, error: "Provider not initialized" };
     }
 
@@ -113,7 +164,7 @@ export class CallManager {
     const callId = crypto.randomUUID();
     const from =
       this.config.fromNumber ||
-      (this.provider?.name === "mock" ? "+15550000000" : undefined);
+      (provider?.name === "mock" ? "+15550000000" : undefined);
     if (!from) {
       return { callId: "", success: false, error: "fromNumber not configured" };
     }
@@ -121,7 +172,7 @@ export class CallManager {
     // Create call record with mode in metadata
     const callRecord: CallRecord = {
       callId,
-      provider: this.provider.name,
+      provider: provider.name,
       direction: "outbound",
       state: "initiated",
       from,
@@ -150,7 +201,7 @@ export class CallManager {
         );
       }
 
-      const result = await this.provider.initiateCall({
+      const result = await provider.initiateCall({
         callId,
         from,
         to,
@@ -193,7 +244,8 @@ export class CallManager {
       return { success: false, error: "Call not found" };
     }
 
-    if (!this.provider || !call.providerCallId) {
+    const provider = this.getProviderForPlatform(call.provider);
+    if (!provider || !call.providerCallId) {
       return { success: false, error: "Call not connected" };
     }
 
@@ -210,7 +262,7 @@ export class CallManager {
       this.addTranscriptEntry(call, "bot", text);
 
       // Play TTS
-      await this.provider.playTts({
+      await provider.playTts({
         callId,
         providerCallId: call.providerCallId,
         text,
@@ -375,7 +427,8 @@ export class CallManager {
       return { success: false, error: "Call not found" };
     }
 
-    if (!this.provider || !call.providerCallId) {
+    const provider = this.getProviderForPlatform(call.provider);
+    if (!provider || !call.providerCallId) {
       return { success: false, error: "Call not connected" };
     }
 
@@ -389,7 +442,7 @@ export class CallManager {
       call.state = "listening";
       this.persistCallRecord(call);
 
-      await this.provider.startListening({
+      await provider.startListening({
         callId,
         providerCallId: call.providerCallId,
       });
@@ -397,7 +450,7 @@ export class CallManager {
       const transcript = await this.waitForFinalTranscript(callId);
 
       // Best-effort: stop listening after final transcript.
-      await this.provider.stopListening({
+      await provider.stopListening({
         callId,
         providerCallId: call.providerCallId,
       });
@@ -422,7 +475,8 @@ export class CallManager {
       return { success: false, error: "Call not found" };
     }
 
-    if (!this.provider || !call.providerCallId) {
+    const provider = this.getProviderForPlatform(call.provider);
+    if (!provider || !call.providerCallId) {
       return { success: false, error: "Call not connected" };
     }
 
@@ -431,7 +485,7 @@ export class CallManager {
     }
 
     try {
-      await this.provider.hangupCall({
+      await provider.hangupCall({
         callId,
         providerCallId: call.providerCallId,
         reason: "hangup-bot",

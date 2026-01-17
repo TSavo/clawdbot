@@ -6,6 +6,13 @@
 export { PluginRegistryError } from "./interfaces.js";
 // Plugin registry
 export { getPluginRegistry, PluginRegistry } from "./registry.js";
+// Platform call provider registry
+export { CallProviderRegistry, initializeAllCallProviders, getProviderMetadata, } from "./plugin-registry.js";
+// Platform-specific call providers
+export { DiscordCallProviderPlugin } from "./discord/provider.js";
+export { TelegramCallProviderPlugin } from "./telegram/provider.js";
+export { SignalCallProviderPlugin } from "./signal/provider.js";
+export { TwilioCallProviderPlugin } from "./twilio/twilio-provider.js";
 // Built-in STT plugins
 export { OpenAIRealtimeSTTProvider, OpenAIRealtimeSTTSession, } from "./stt-openai-realtime/index.js";
 // Built-in TTS plugins
