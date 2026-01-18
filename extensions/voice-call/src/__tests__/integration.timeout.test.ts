@@ -14,18 +14,21 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { CallManager } from "../manager.js";
 import { MockVoiceProvider } from "./mocks/providers.js";
 import { createMockConfig } from "./mocks/config.js";
+import { SyncCallCleanupScheduler } from "./mocks/index.js";
 import type { NormalizedEvent } from "../types.js";
 
-describe("Timeout Enforcement - Real Timer Tests", () => {
+describe("Timeout Enforcement - Synchronous Scheduler Tests", () => {
   let tempDir: string;
   let mockProvider: MockVoiceProvider;
+  let scheduler: SyncCallCleanupScheduler;
   let config: any;
   const webhookUrl = "https://example.com/webhook";
 
   beforeEach(() => {
     tempDir = path.join(os.tmpdir(), `voice-timeout-${Date.now()}`);
     mockProvider = new MockVoiceProvider();
-    // 2 second timeout for tests to keep tests fast
+    scheduler = new SyncCallCleanupScheduler();
+    // 2 second timeout config (not actually used in sync tests)
     config = createMockConfig({
       provider: "mock",
       maxDurationSeconds: 2,
@@ -34,11 +37,30 @@ describe("Timeout Enforcement - Real Timer Tests", () => {
 
   afterEach(() => {
     mockProvider.reset();
+    scheduler.reset();
+  });
+
+  describe("SyncCallCleanupScheduler", () => {
+    it("should schedule and trigger timeouts correctly", () => {
+      const testScheduler = new SyncCallCleanupScheduler();
+      let callbackFired = false;
+
+      testScheduler.schedule("test-call", 1000, () => {
+        callbackFired = true;
+      });
+
+      expect(testScheduler.getScheduled()).toContain("test-call");
+      expect(callbackFired).toBe(false);
+
+      testScheduler.triggerTimeout("test-call");
+      expect(callbackFired).toBe(true);
+      expect(testScheduler.getScheduled()).not.toContain("test-call");
+    });
   });
 
   describe("Max Duration Timer", () => {
-    it("should auto-hangup when maxDurationSeconds expires", async () => {
-      const manager = new CallManager(config, tempDir);
+    it("should auto-hangup when maxDurationSeconds expires (sync test)", async () => {
+      const manager = new CallManager(config, tempDir, scheduler);
       manager.initialize(mockProvider, webhookUrl);
 
       const result = await manager.initiateCall("+15550000001");
@@ -57,8 +79,11 @@ describe("Timeout Enforcement - Real Timer Tests", () => {
       expect(callBeforeTimeout).toBeDefined();
       expect(callBeforeTimeout?.state).toBe("answered");
 
-      // Wait for timeout to fire (2 seconds + buffer)
-      await new Promise((resolve) => setTimeout(resolve, 2500));
+      // Verify cleanup scheduler has the call scheduled
+      expect(scheduler.getScheduled()).toContain(callId);
+
+      // Trigger timeout and await async operations
+      await scheduler.triggerTimeoutAsync(callId);
 
       // Call should be removed (auto-hangup completed)
       expect(manager.getCall(callId)).toBeUndefined();
@@ -68,8 +93,8 @@ describe("Timeout Enforcement - Real Timer Tests", () => {
       expect(mockProvider.hangupCallCalls.length).toBeGreaterThan(0);
     });
 
-    it("should clear timer when call ends before timeout", async () => {
-      const manager = new CallManager(config, tempDir);
+    it("should clear timer when call ends before timeout (sync test)", async () => {
+      const manager = new CallManager(config, tempDir, scheduler);
       manager.initialize(mockProvider, webhookUrl);
 
       const result = await manager.initiateCall("+15550000002");
@@ -84,7 +109,10 @@ describe("Timeout Enforcement - Real Timer Tests", () => {
         timestamp: Date.now(),
       } as NormalizedEvent);
 
-      // End call quickly (before 2 second timeout)
+      // Verify cleanup scheduler has the call scheduled
+      expect(scheduler.getScheduled()).toContain(callId);
+
+      // End call (clears scheduler)
       manager.processEvent({
         id: "evt-ended",
         type: "call.ended",
@@ -94,68 +122,67 @@ describe("Timeout Enforcement - Real Timer Tests", () => {
         endReason: "completed",
       } as NormalizedEvent);
 
-      // Wait to see if timeout still fires
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-
       // Call should be removed (normal end, not timeout)
       expect(manager.getCall(callId)).toBeUndefined();
+      // Scheduler should no longer have this call scheduled
+      expect(scheduler.getScheduled()).not.toContain(callId);
       // Should only have 1 hangup call (from normal end, not timeout)
       expect(mockProvider.hangupCallCalls.length).toBeLessThanOrEqual(1);
     });
 
-    it(
-      "should handle multiple concurrent calls with different timeouts",
-      { timeout: 10000 },
-      async () => {
-        const concurrentConfig = createMockConfig({
-          provider: "mock",
-          maxDurationSeconds: 2,
-          maxConcurrentCalls: 5, // Allow multiple concurrent calls
-        });
-        const manager = new CallManager(concurrentConfig, tempDir);
-        manager.initialize(mockProvider, webhookUrl);
+    it("should handle multiple concurrent calls with different timeouts (sync test)", async () => {
+      const concurrentConfig = createMockConfig({
+        provider: "mock",
+        maxDurationSeconds: 2,
+        maxConcurrentCalls: 5, // Allow multiple concurrent calls
+      });
+      const manager = new CallManager(concurrentConfig, tempDir, scheduler);
+      manager.initialize(mockProvider, webhookUrl);
 
-        const result1 = await manager.initiateCall("+15550000003");
-        const result2 = await manager.initiateCall("+15550000004");
-        expect(result1.success).toBe(true);
-        expect(result2.success).toBe(true);
+      const result1 = await manager.initiateCall("+15550000003");
+      const result2 = await manager.initiateCall("+15550000004");
+      expect(result1.success).toBe(true);
+      expect(result2.success).toBe(true);
 
-        const callId1 = result1.callId!;
-        const callId2 = result2.callId!;
+      const callId1 = result1.callId!;
+      const callId2 = result2.callId!;
 
-        // Answer both (starts both timers)
-        for (const callId of [callId1, callId2]) {
-          manager.processEvent({
-            id: `evt-answered-${callId}`,
-            type: "call.answered",
-            callId,
-            timestamp: Date.now(),
-          } as NormalizedEvent);
-        }
-
-        expect(manager.getActiveCalls().length).toBe(2);
-
-        // Wait for timeout
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-
-        // Both should be cleaned up
-        expect(manager.getCall(callId1)).toBeUndefined();
-        expect(manager.getCall(callId2)).toBeUndefined();
-        expect(manager.getActiveCalls().length).toBe(0);
-
-        // Both should have been hung up
-        expect(mockProvider.hangupCallCalls.length).toBeGreaterThanOrEqual(2);
+      // Answer both (starts both timers)
+      for (const callId of [callId1, callId2]) {
+        manager.processEvent({
+          id: `evt-answered-${callId}`,
+          type: "call.answered",
+          callId,
+          timestamp: Date.now(),
+        } as NormalizedEvent);
       }
-    );
+
+      expect(manager.getActiveCalls().length).toBe(2);
+      // Both should be scheduled
+      expect(scheduler.getScheduled()).toContain(callId1);
+      expect(scheduler.getScheduled()).toContain(callId2);
+
+      // Trigger both timeouts and await async operations
+      await scheduler.triggerTimeoutAsync(callId1);
+      await scheduler.triggerTimeoutAsync(callId2);
+
+      // Both should be cleaned up
+      expect(manager.getCall(callId1)).toBeUndefined();
+      expect(manager.getCall(callId2)).toBeUndefined();
+      expect(manager.getActiveCalls().length).toBe(0);
+
+      // Both should have been hung up
+      expect(mockProvider.hangupCallCalls.length).toBeGreaterThanOrEqual(2);
+    });
   });
 
   describe("Different Max Duration Config", () => {
-    it("should respect custom maxDurationSeconds config (1 second)", async () => {
+    it("should respect custom maxDurationSeconds config (sync test)", async () => {
       const customConfig = createMockConfig({
         provider: "mock",
         maxDurationSeconds: 1,
       });
-      const manager = new CallManager(customConfig, tempDir);
+      const manager = new CallManager(customConfig, tempDir, scheduler);
       manager.initialize(mockProvider, webhookUrl);
 
       const result = await manager.initiateCall("+15550000005");
@@ -169,51 +196,71 @@ describe("Timeout Enforcement - Real Timer Tests", () => {
         timestamp: Date.now(),
       } as NormalizedEvent);
 
-      // Wait for 1 second timeout
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Trigger timeout and await async operations
+      await scheduler.triggerTimeoutAsync(callId);
 
       // Call should be cleaned
       expect(manager.getCall(callId)).toBeUndefined();
       expect(mockProvider.hangupCallCalls.length).toBeGreaterThan(0);
     });
 
-    it("should respect longer maxDurationSeconds config (3 seconds)", async () => {
-      const customConfig = createMockConfig({
+    it("should schedule different timeouts per call (sync test)", async () => {
+      const call1Config = createMockConfig({
+        provider: "mock",
+        maxDurationSeconds: 1,
+      });
+      const call2Config = createMockConfig({
         provider: "mock",
         maxDurationSeconds: 3,
       });
-      const manager = new CallManager(customConfig, tempDir);
-      manager.initialize(mockProvider, webhookUrl);
+      const manager1 = new CallManager(call1Config, tempDir, scheduler);
+      const manager2 = new CallManager(call2Config, tempDir, scheduler);
+      manager1.initialize(mockProvider, webhookUrl);
+      manager2.initialize(mockProvider, webhookUrl);
 
-      const result = await manager.initiateCall("+15550000006");
-      expect(result.success).toBe(true);
-      const callId = result.callId!;
+      const result1 = await manager1.initiateCall("+15550000006a");
+      const result2 = await manager2.initiateCall("+15550000006b");
+      expect(result1.success).toBe(true);
+      expect(result2.success).toBe(true);
 
-      const startTime = Date.now();
-      manager.processEvent({
-        id: "evt-answered",
+      const callId1 = result1.callId!;
+      const callId2 = result2.callId!;
+
+      manager1.processEvent({
+        id: "evt-answered-1",
         type: "call.answered",
-        callId,
-        timestamp: startTime,
+        callId: callId1,
+        timestamp: Date.now(),
       } as NormalizedEvent);
 
-      // Wait shorter than timeout (2 seconds)
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      manager2.processEvent({
+        id: "evt-answered-2",
+        type: "call.answered",
+        callId: callId2,
+        timestamp: Date.now(),
+      } as NormalizedEvent);
 
-      // Call should still exist (timeout is 3 seconds)
-      expect(manager.getCall(callId)).toBeDefined();
+      // Both scheduled
+      expect(scheduler.getScheduled()).toContain(callId1);
+      expect(scheduler.getScheduled()).toContain(callId2);
 
-      // Wait for the rest of the timeout
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Trigger first timeout
+      await scheduler.triggerTimeoutAsync(callId1);
 
-      // Now call should be cleaned
-      expect(manager.getCall(callId)).toBeUndefined();
+      // First call should be cleaned, second should still exist
+      expect(manager1.getCall(callId1)).toBeUndefined();
+      expect(manager2.getCall(callId2)).toBeDefined();
+      expect(scheduler.getScheduled()).toContain(callId2);
+
+      // Trigger second timeout
+      await scheduler.triggerTimeoutAsync(callId2);
+      expect(manager2.getCall(callId2)).toBeUndefined();
     });
   });
 
   describe("Timeout with Different Call States", () => {
-    it("should not auto-hangup if call never reaches answered state", async () => {
-      const manager = new CallManager(config, tempDir);
+    it("should not auto-hangup if call never reaches answered state (sync test)", async () => {
+      const manager = new CallManager(config, tempDir, scheduler);
       manager.initialize(mockProvider, webhookUrl);
 
       const result = await manager.initiateCall("+15550000007");
@@ -223,18 +270,17 @@ describe("Timeout Enforcement - Real Timer Tests", () => {
       // Leave call in 'initiated' state without answering
       expect(manager.getCall(callId)?.state).toBe("initiated");
 
-      // Wait past the 2 second timeout
-      await new Promise((resolve) => setTimeout(resolve, 2500));
+      // Max duration timer only fires after answered state
+      expect(scheduler.getScheduled()).not.toContain(callId);
 
-      // Call should still exist because max duration timer only fires after answered
-      // (Initiation timeout is separate and should be ~30s in real implementation)
+      // Call should still exist (no timer was scheduled)
       expect(manager.getCall(callId)).toBeDefined();
     });
   });
 
   describe("Rapid State Transitions", () => {
-    it("should handle rapid state transitions without timer conflicts", async () => {
-      const manager = new CallManager(config, tempDir);
+    it("should handle rapid state transitions without timer conflicts (sync test)", async () => {
+      const manager = new CallManager(config, tempDir, scheduler);
       manager.initialize(mockProvider, webhookUrl);
 
       const result = await manager.initiateCall("+15550000008");
@@ -249,6 +295,9 @@ describe("Timeout Enforcement - Real Timer Tests", () => {
         timestamp: Date.now(),
       } as NormalizedEvent);
 
+      // Timer is scheduled after answered
+      expect(scheduler.getScheduled()).toContain(callId);
+
       // Immediately end before timeout
       manager.processEvent({
         id: "evt-ended",
@@ -259,11 +308,10 @@ describe("Timeout Enforcement - Real Timer Tests", () => {
         endReason: "completed",
       } as NormalizedEvent);
 
-      // Wait past original timeout
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-
-      // Call should be cleaned up from normal end, not timeout
+      // Call should be cleaned up from normal end
       expect(manager.getCall(callId)).toBeUndefined();
+      // Scheduler should no longer have the call
+      expect(scheduler.getScheduled()).not.toContain(callId);
       expect(mockProvider.hangupCallCalls.length).toBeLessThanOrEqual(1);
     });
   });

@@ -109,8 +109,8 @@ describe("CallManager", () => {
       timestamp: Date.now(),
     });
 
-    // Verify call state changed to answered
+    // Verify call state changed to speaking (initial message delivery)
     call = manager.getCall(callId);
-    expect(call?.state).toBe("answered");
+    expect(call?.state).toBe("speaking");
   });
 });

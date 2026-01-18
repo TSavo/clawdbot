@@ -19,6 +19,7 @@ import {
 } from "../commands/onboard-helpers.js";
 import { promptRemoteGatewayConfig } from "../commands/onboard-remote.js";
 import { setupSkills } from "../commands/onboard-skills.js";
+import { setupVoiceProviders } from "../commands/onboarding/onboarding.voice-providers.js";
 import type {
   GatewayAuthChoice,
   OnboardMode,
@@ -397,6 +398,20 @@ export async function runOnboardingWizard(
   await ensureWorkspaceAndSessions(workspaceDir, runtime, {
     skipBootstrap: Boolean(nextConfig.agents?.defaults?.skipBootstrap),
   });
+
+  if (opts.skipVoice) {
+    await prompter.note("Skipping voice providers setup.", "Voice");
+  } else {
+    const voiceResult = await setupVoiceProviders({
+      cfg: nextConfig,
+      prompter,
+      runtime,
+    });
+    nextConfig = voiceResult.cfg;
+    if (voiceResult.voiceProvidersAdded) {
+      runtime.log("Voice providers configured");
+    }
+  }
 
   if (opts.skipSkills) {
     await prompter.note("Skipping skills setup.", "Skills");

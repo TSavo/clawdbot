@@ -18,6 +18,8 @@ import {
   type TranscriptEntry,
 } from "./types.js";
 import { escapeXml, mapVoiceToPolly } from "./voice-mapping.js";
+import type { CallCleanupScheduler } from "./scheduler.js";
+import { DefaultCallCleanupScheduler } from "./scheduler.js";
 
 /**
  * Manages voice calls: state machine, persistence, and provider coordination.
@@ -47,12 +49,14 @@ export class CallManager {
       timeout: NodeJS.Timeout;
     }
   >();
-  /** Max duration timers to auto-hangup calls after configured timeout */
-  private maxDurationTimers = new Map<CallId, NodeJS.Timeout>();
-  /** Notify mode auto-hangup timers (separate from max duration timers) */
-  private notifyModeHangupTimers = new Map<CallId, NodeJS.Timeout>();
+  /** Cleanup scheduler for managing call timeouts (max duration and notify mode) */
+  private cleanupScheduler: CallCleanupScheduler;
 
-  constructor(config: VoiceCallConfig, storePath?: string) {
+  constructor(
+    config: VoiceCallConfig,
+    storePath?: string,
+    cleanupScheduler?: CallCleanupScheduler,
+  ) {
     this.config = config;
     // Resolve store path with tilde expansion (like other config values)
     const rawPath =
@@ -60,6 +64,15 @@ export class CallManager {
       config.store ||
       path.join(os.homedir(), "clawd", "voice-calls");
     this.storePath = resolveUserPath(rawPath);
+    // Use provided scheduler or default to real timers
+    this.cleanupScheduler = cleanupScheduler || new DefaultCallCleanupScheduler();
+    if (cleanupScheduler) {
+      console.log(
+        `[voice-call] Using injected ${cleanupScheduler.constructor.name}`,
+      );
+    } else {
+      console.log("[voice-call] Using default DefaultCallCleanupScheduler");
+    }
   }
 
   /**
@@ -327,25 +340,26 @@ export class CallManager {
       console.log(
         `[voice-call] Notify mode: auto-hangup in ${delaySec}s for call ${call.callId}`,
       );
-      // Schedule the hangup with a promise-based approach to ensure it completes
-      const timeoutHandle = setTimeout(() => {
-        const currentCall = this.getCall(call.callId);
-        if (currentCall && !TerminalStates.has(currentCall.state)) {
-          console.log(
-            `[voice-call] Notify mode: hanging up call ${call.callId}`,
-          );
-          // Fire and forget - no need to await in timeout
-          this.endCall(call.callId).catch((err) => {
-            console.warn(
-              `[voice-call] Failed to hangup notify call ${call.callId}: ${err}`,
+      this.cleanupScheduler.schedule(
+        call.callId,
+        delaySec * 1000,
+        async () => {
+          const currentCall = this.getCall(call.callId);
+          if (currentCall && !TerminalStates.has(currentCall.state)) {
+            console.log(
+              `[voice-call] Notify mode: hanging up call ${call.callId}`,
             );
-          });
-        }
-        // Clean up the timer reference
-        this.notifyModeHangupTimers.delete(call.callId);
-      }, delaySec * 1000);
-      // Store timeout handle in notify mode hangup map
-      this.notifyModeHangupTimers.set(call.callId, timeoutHandle);
+            // Return the Promise so tests can await it via triggerTimeoutAsync()
+            try {
+              await this.endCall(call.callId);
+            } catch (err) {
+              console.warn(
+                `[voice-call] Failed to hangup notify call ${call.callId}: ${err}`,
+              );
+            }
+          }
+        },
+      );
     }
   }
 
@@ -354,16 +368,12 @@ export class CallManager {
    * Auto-hangup when maxDurationSeconds is reached.
    */
   private startMaxDurationTimer(callId: CallId): void {
-    // Clear any existing timer
-    this.clearMaxDurationTimer(callId);
-
     const maxDurationMs = this.config.maxDurationSeconds * 1000;
     console.log(
       `[voice-call] Starting max duration timer (${this.config.maxDurationSeconds}s) for call ${callId}`,
     );
 
-    const timer = setTimeout(async () => {
-      this.maxDurationTimers.delete(callId);
+    this.cleanupScheduler.schedule(callId, maxDurationMs, async () => {
       const call = this.getCall(callId);
       if (call && !TerminalStates.has(call.state)) {
         console.log(
@@ -371,22 +381,23 @@ export class CallManager {
         );
         call.endReason = "timeout";
         this.persistCallRecord(call);
-        await this.endCall(callId);
+        // Return the Promise so tests can await it via triggerTimeoutAsync()
+        try {
+          await this.endCall(callId);
+        } catch (err) {
+          console.warn(
+            `[voice-call] Failed to end call on max duration timeout ${callId}: ${err}`,
+          );
+        }
       }
-    }, maxDurationMs);
-
-    this.maxDurationTimers.set(callId, timer);
+    });
   }
 
   /**
-   * Clear max duration timer for a call.
+   * Clear cleanup scheduler for a call (used for both max duration and notify mode).
    */
-  private clearMaxDurationTimer(callId: CallId): void {
-    const timer = this.maxDurationTimers.get(callId);
-    if (timer) {
-      clearTimeout(timer);
-      this.maxDurationTimers.delete(callId);
-    }
+  private clearCleanupScheduler(callId: CallId): void {
+    this.cleanupScheduler.cancel(callId);
   }
 
   private clearTranscriptWaiter(callId: CallId): void {
@@ -507,7 +518,7 @@ export class CallManager {
       call.endedAt = Date.now();
       call.endReason = "hangup-bot";
       this.persistCallRecord(call);
-      this.clearMaxDurationTimer(callId);
+      this.clearCleanupScheduler(callId);
       this.rejectTranscriptWaiter(callId, "Call ended: hangup-bot");
       this.activeCalls.delete(callId);
       if (call.providerCallId) {
@@ -678,24 +689,6 @@ export class CallManager {
         this.startMaxDurationTimer(call.callId);
         // Speak initial message for outbound calls (including notify mode auto-hangup)
         this.maybeSpeakInitialMessageOnAnswered(call);
-        // For notify mode, schedule auto-hangup directly
-        const mode = (call.metadata?.mode as string) ?? "conversation";
-        if (mode === "notify" && !this.notifyModeHangupTimers.has(call.callId)) {
-          const delaySec = this.config.outbound.notifyHangupDelaySec;
-          const timeoutHandle = setTimeout(() => {
-            const currentCall = this.getCall(call.callId);
-            if (currentCall && !TerminalStates.has(currentCall.state)) {
-              console.log(
-                `[voice-call] Notify mode: auto-hangup triggered for ${call.callId}`,
-              );
-              this.endCall(call.callId).catch((err) => {
-                console.warn(`[voice-call] Failed to hangup: ${err}`);
-              });
-            }
-            this.notifyModeHangupTimers.delete(call.callId);
-          }, delaySec * 1000);
-          this.notifyModeHangupTimers.set(call.callId, timeoutHandle);
-        }
         break;
 
       case "call.active":
@@ -718,7 +711,7 @@ export class CallManager {
         call.endedAt = event.timestamp;
         call.endReason = event.reason;
         this.transitionState(call, event.reason as CallState);
-        this.clearMaxDurationTimer(call.callId);
+        this.clearCleanupScheduler(call.callId);
         this.rejectTranscriptWaiter(call.callId, `Call ended: ${event.reason}`);
         this.activeCalls.delete(call.callId);
         if (call.providerCallId) {
@@ -731,7 +724,7 @@ export class CallManager {
           call.endedAt = event.timestamp;
           call.endReason = "error";
           this.transitionState(call, "error");
-          this.clearMaxDurationTimer(call.callId);
+          this.clearCleanupScheduler(call.callId);
           this.rejectTranscriptWaiter(
             call.callId,
             `Call error: ${event.error}`,
