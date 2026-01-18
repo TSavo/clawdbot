@@ -49,6 +49,8 @@ export class CallManager {
   >();
   /** Max duration timers to auto-hangup calls after configured timeout */
   private maxDurationTimers = new Map<CallId, NodeJS.Timeout>();
+  /** Notify mode auto-hangup timers (separate from max duration timers) */
+  private notifyModeHangupTimers = new Map<CallId, NodeJS.Timeout>();
 
   constructor(config: VoiceCallConfig, storePath?: string) {
     this.config = config;
@@ -325,15 +327,25 @@ export class CallManager {
       console.log(
         `[voice-call] Notify mode: auto-hangup in ${delaySec}s for call ${call.callId}`,
       );
-      setTimeout(async () => {
+      // Schedule the hangup with a promise-based approach to ensure it completes
+      const timeoutHandle = setTimeout(() => {
         const currentCall = this.getCall(call.callId);
         if (currentCall && !TerminalStates.has(currentCall.state)) {
           console.log(
             `[voice-call] Notify mode: hanging up call ${call.callId}`,
           );
-          await this.endCall(call.callId);
+          // Fire and forget - no need to await in timeout
+          this.endCall(call.callId).catch((err) => {
+            console.warn(
+              `[voice-call] Failed to hangup notify call ${call.callId}: ${err}`,
+            );
+          });
         }
+        // Clean up the timer reference
+        this.notifyModeHangupTimers.delete(call.callId);
       }, delaySec * 1000);
+      // Store timeout handle in notify mode hangup map
+      this.notifyModeHangupTimers.set(call.callId, timeoutHandle);
     }
   }
 
@@ -664,9 +676,26 @@ export class CallManager {
         this.transitionState(call, "answered");
         // Start max duration timer when call is answered
         this.startMaxDurationTimer(call.callId);
-        // Best-effort: speak initial message (for inbound greetings and outbound
-        // conversation mode) once the call is answered.
+        // Speak initial message for outbound calls (including notify mode auto-hangup)
         this.maybeSpeakInitialMessageOnAnswered(call);
+        // For notify mode, schedule auto-hangup directly
+        const mode = (call.metadata?.mode as string) ?? "conversation";
+        if (mode === "notify" && !this.notifyModeHangupTimers.has(call.callId)) {
+          const delaySec = this.config.outbound.notifyHangupDelaySec;
+          const timeoutHandle = setTimeout(() => {
+            const currentCall = this.getCall(call.callId);
+            if (currentCall && !TerminalStates.has(currentCall.state)) {
+              console.log(
+                `[voice-call] Notify mode: auto-hangup triggered for ${call.callId}`,
+              );
+              this.endCall(call.callId).catch((err) => {
+                console.warn(`[voice-call] Failed to hangup: ${err}`);
+              });
+            }
+            this.notifyModeHangupTimers.delete(call.callId);
+          }, delaySec * 1000);
+          this.notifyModeHangupTimers.set(call.callId, timeoutHandle);
+        }
         break;
 
       case "call.active":
@@ -734,6 +763,8 @@ export class CallManager {
     // fail for inbound calls; keep existing Twilio behavior unchanged.
     if (provider.name === "twilio") return;
 
+    // For non-Twilio providers (including notify mode), speak the message
+    // which will also handle auto-hangup for notify mode
     void this.speakInitialMessage(call.providerCallId);
   }
 
