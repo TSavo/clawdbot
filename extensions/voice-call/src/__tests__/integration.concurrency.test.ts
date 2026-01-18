@@ -1,3 +1,5 @@
+import fs from 'fs';
+
 /**
  * Scenario 4: Concurrent Call Operations - Race Condition Tests
  *
@@ -14,6 +16,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import path from "node:path";
 import os from "node:os";
+import fs from "fs";
 
 import { CallManager } from "../manager.js";
 import {

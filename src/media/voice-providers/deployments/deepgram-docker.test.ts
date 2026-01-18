@@ -201,7 +201,7 @@ describe("DeepgramDockerHandler", () => {
       try {
         await handler.pullImage("deepgram:nonexistent", 1);
         // If it succeeds, that's also fine (Docker available)
-      } catch {
+      } catch (error) {
         expect(error).toBeInstanceOf(VoiceProviderError);
       }
     });

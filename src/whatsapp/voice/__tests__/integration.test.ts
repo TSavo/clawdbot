@@ -24,6 +24,9 @@ const mockRuntime: RuntimeEnv = {
   exit: vi.fn(),
 };
 
+// Global parser variable for webhook tests
+let _parser: WhatsAppWebhookParser;
+
 // ===================================================================
 // TESTS: Voice Message Detection
 // ===================================================================
@@ -103,8 +106,10 @@ describe("WhatsApp Voice: Message Handler", () => {
 // ===================================================================
 
 describe("WhatsApp Voice: Webhook Parser", () => {
+  let parser: WhatsAppWebhookParser;
+
   beforeEach(() => {
-    _parser = new WhatsAppWebhookParser(mockRuntime);
+    parser = new WhatsAppWebhookParser(mockRuntime);
   });
 
   it("should parse voice message webhook", () => {

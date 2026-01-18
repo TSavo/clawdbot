@@ -471,7 +471,7 @@ describe("SystemHandler", () => {
       let errorThrown: any;
       try {
         await handler.startProcess({});
-      } catch {
+      } catch (error) {
         errorThrown = error;
       }
 
