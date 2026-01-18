@@ -31,8 +31,7 @@ afterEach(async () => {
 describe("sessions_send gateway loopback", () => {
   it("returns reply when lifecycle ends before agent.wait", async () => {
     const port = await getFreePort();
-    const prevPort = process.env.CLAWDBOT_GATEWAY_PORT;
-    process.env.CLAWDBOT_GATEWAY_PORT = String(port);
+    vi.stubEnv("CLAWDBOT_GATEWAY_PORT", String(port));
 
     const server = await startGatewayServer(port);
     servers.push(server);
@@ -99,12 +98,6 @@ describe("sessions_send gateway loopback", () => {
 
       const firstCall = spy.mock.calls[0]?.[0] as { lane?: string } | undefined;
       expect(firstCall?.lane).toBe("nested");
-    } finally {
-      if (prevPort === undefined) {
-        delete process.env.CLAWDBOT_GATEWAY_PORT;
-      } else {
-        process.env.CLAWDBOT_GATEWAY_PORT = prevPort;
-      }
     }
   });
 });
@@ -112,8 +105,7 @@ describe("sessions_send gateway loopback", () => {
 describe("sessions_send label lookup", () => {
   it("finds session by label and sends message", { timeout: 15_000 }, async () => {
     const port = await getFreePort();
-    const prevPort = process.env.CLAWDBOT_GATEWAY_PORT;
-    process.env.CLAWDBOT_GATEWAY_PORT = String(port);
+    vi.stubEnv("CLAWDBOT_GATEWAY_PORT", String(port));
 
     const server = await startGatewayServer(port);
     servers.push(server);
@@ -176,19 +168,12 @@ describe("sessions_send label lookup", () => {
       expect(details.status).toBe("ok");
       expect(details.reply).toBe("labeled response");
       expect(details.sessionKey).toBe("agent:main:test-labeled-session");
-    } finally {
-      if (prevPort === undefined) {
-        delete process.env.CLAWDBOT_GATEWAY_PORT;
-      } else {
-        process.env.CLAWDBOT_GATEWAY_PORT = prevPort;
-      }
     }
   });
 
   it("returns error when label not found", { timeout: 15_000 }, async () => {
     const port = await getFreePort();
-    const prevPort = process.env.CLAWDBOT_GATEWAY_PORT;
-    process.env.CLAWDBOT_GATEWAY_PORT = String(port);
+    vi.stubEnv("CLAWDBOT_GATEWAY_PORT", String(port));
 
     const server = await startGatewayServer(port);
     servers.push(server);
@@ -205,19 +190,12 @@ describe("sessions_send label lookup", () => {
       const details = result.details as { status?: string; error?: string };
       expect(details.status).toBe("error");
       expect(details.error).toContain("No session found with label");
-    } finally {
-      if (prevPort === undefined) {
-        delete process.env.CLAWDBOT_GATEWAY_PORT;
-      } else {
-        process.env.CLAWDBOT_GATEWAY_PORT = prevPort;
-      }
     }
   });
 
   it("returns error when neither sessionKey nor label provided", { timeout: 15_000 }, async () => {
     const port = await getFreePort();
-    const prevPort = process.env.CLAWDBOT_GATEWAY_PORT;
-    process.env.CLAWDBOT_GATEWAY_PORT = String(port);
+    vi.stubEnv("CLAWDBOT_GATEWAY_PORT", String(port));
 
     const server = await startGatewayServer(port);
     servers.push(server);
@@ -233,12 +211,6 @@ describe("sessions_send label lookup", () => {
       const details = result.details as { status?: string; error?: string };
       expect(details.status).toBe("error");
       expect(details.error).toContain("Either sessionKey or label is required");
-    } finally {
-      if (prevPort === undefined) {
-        delete process.env.CLAWDBOT_GATEWAY_PORT;
-      } else {
-        process.env.CLAWDBOT_GATEWAY_PORT = prevPort;
-      }
     }
   });
 });
