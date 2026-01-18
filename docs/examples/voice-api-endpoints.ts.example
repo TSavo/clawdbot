@@ -1,0 +1,553 @@
+/**
+ * Voice API Endpoints
+ *
+ * Example implementation of voice provider management API endpoints
+ * for the gateway server.
+ *
+ * These endpoints provide:
+ * - Provider discovery and status
+ * - Configuration management
+ * - Testing interface for TTS/STT
+ * - System health and resource monitoring
+ */
+
+import type { Request, Response, Router } from "express";
+import {
+  PluginRegistry,
+  type STTProvider,
+  type TTSProvider,
+} from "../../extensions/voice-call/src/plugins/index.js";
+import type {
+  GetProvidersResponse,
+  GetConfigResponse,
+  SetConfigRequest,
+  GetProviderStatusResponse,
+  GetCapabilitiesResponse,
+  TestTTSRequest,
+  TestTTSResponse,
+  TestSTTResponse,
+  VoiceSystemHealth,
+  DiscoveryResponse,
+} from "../../ui/src/ui/types/voice-api.js";
+
+/**
+ * Configuration storage (would be persisted in real implementation)
+ */
+interface StoredVoiceConfig {
+  sttProvider: { id: string; config?: Record<string, unknown> };
+  ttsProvider: { id: string; config?: Record<string, unknown> };
+  fallbackChain?: string[];
+  enabled: boolean;
+}
+
+class VoiceApiHandler {
+  private config: StoredVoiceConfig = {
+    sttProvider: { id: "stt-whisper-local", config: {} },
+    ttsProvider: { id: "tts-piper", config: {} },
+    fallbackChain: [],
+    enabled: true,
+  };
+
+  /**
+   * GET /api/voice/providers
+   * List all available providers with their capabilities
+   */
+  async getProviders(req: Request, res: Response): Promise<void> {
+    try {
+      const registry = PluginRegistry.getInstance();
+      const allPlugins = registry.getAll();
+
+      const providers = allPlugins.map((plugin: any) => {
+        const instance = plugin.instance as STTProvider | TTSProvider;
+        return {
+          id: plugin.id,
+          name: plugin.name,
+          type: plugin.type,
+          description: instance.metadata.description,
+          version: instance.metadata.version,
+          capabilities: instance.metadata.capabilities,
+          config: this.getProviderConfig(plugin.type),
+          status: "available" as const,
+        };
+      });
+
+      const response: GetProvidersResponse = {
+        providers,
+        timestamp: Date.now(),
+      };
+
+      res.json(response);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: {
+          code: "PROVIDER_LIST_ERROR",
+          message: "Failed to list providers",
+          details: {
+            error:
+              error instanceof Error ? error.message : "Unknown error",
+          },
+        },
+      });
+    }
+  }
+
+  /**
+   * GET /api/voice/config
+   * Get current voice configuration
+   */
+  async getConfig(req: Request, res: Response): Promise<void> {
+    try {
+      const response: GetConfigResponse = {
+        config: this.config,
+        timestamp: Date.now(),
+      };
+
+      res.json(response);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: {
+          code: "CONFIG_LOAD_ERROR",
+          message: "Failed to load configuration",
+        },
+      });
+    }
+  }
+
+  /**
+   * POST /api/voice/config
+   * Save voice configuration
+   */
+  async setConfig(
+    req: Request<unknown, unknown, SetConfigRequest>,
+    res: Response,
+  ): Promise<void> {
+    try {
+      const { config } = req.body;
+
+      // Validate configuration
+      if (!config.sttProvider?.id || !config.ttsProvider?.id) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: "INVALID_CONFIG",
+            message: "Missing required provider IDs",
+          },
+        });
+        return;
+      }
+
+      // Verify providers exist
+      const registry = PluginRegistry.getInstance();
+      const sttPlugin = registry.get(config.sttProvider.id);
+      const ttsPlugin = registry.get(config.ttsProvider.id);
+
+      if (!sttPlugin || !ttsPlugin) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: "INVALID_PROVIDER",
+            message: "One or more providers not found",
+          },
+        });
+        return;
+      }
+
+      // Save configuration
+      this.config = config;
+
+      res.json({
+        success: true,
+        config: this.config,
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: {
+          code: "CONFIG_SAVE_ERROR",
+          message: "Failed to save configuration",
+        },
+      });
+    }
+  }
+
+  /**
+   * GET /api/voice/providers/:providerId/status
+   * Get provider status and resource usage
+   */
+  async getProviderStatus(
+    req: Request<{ providerId: string }>,
+    res: Response,
+  ): Promise<void> {
+    try {
+      const { providerId } = req.params;
+      const registry = PluginRegistry.getInstance();
+      const plugin = registry.get(providerId);
+
+      if (!plugin) {
+        res.status(404).json({
+          success: false,
+          error: {
+            code: "PROVIDER_NOT_FOUND",
+            message: `Provider not found: ${providerId}`,
+          },
+        });
+        return;
+      }
+
+      const status: GetProviderStatusResponse = {
+        status: {
+          id: providerId,
+          name: plugin.name,
+          available: true,
+          healthy: true,
+          lastChecked: Date.now(),
+          resourceUsage: {
+            gpu: {
+              enabled: providerId.includes("whisper"),
+              utilization: providerId.includes("whisper") ? 45 : undefined,
+              memory: providerId.includes("whisper") ? 2048 : undefined,
+            },
+            memory: 256,
+            cpu: 12,
+          },
+          warnings: [],
+        },
+        timestamp: Date.now(),
+      };
+
+      res.json(status);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: {
+          code: "STATUS_ERROR",
+          message: "Failed to get provider status",
+        },
+      });
+    }
+  }
+
+  /**
+   * GET /api/voice/providers/:providerId/capabilities
+   * Get provider capabilities (voices, models, languages, etc.)
+   */
+  async getCapabilities(
+    req: Request<{ providerId: string }>,
+    res: Response,
+  ): Promise<void> {
+    try {
+      const { providerId } = req.params;
+      const registry = PluginRegistry.getInstance();
+      const plugin = registry.get(providerId);
+
+      if (!plugin) {
+        res.status(404).json({
+          success: false,
+          error: {
+            code: "PROVIDER_NOT_FOUND",
+            message: `Provider not found: ${providerId}`,
+          },
+        });
+        return;
+      }
+
+      // Return provider-specific capabilities
+      const capabilities = this.getProviderCapabilities(
+        providerId,
+        plugin.type,
+      );
+
+      res.json({
+        ...capabilities,
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: {
+          code: "CAPABILITIES_ERROR",
+          message: "Failed to get capabilities",
+        },
+      });
+    }
+  }
+
+  /**
+   * POST /api/voice/test-tts
+   * Test text-to-speech synthesis
+   */
+  async testTTS(
+    req: Request<unknown, unknown, TestTTSRequest>,
+    res: Response<TestTTSResponse>,
+  ): Promise<void> {
+    const startTime = Date.now();
+
+    try {
+      const { providerId, text, voice, speed, instructions } = req.body;
+
+      if (!providerId || !text) {
+        res.status(400).json({
+          success: false,
+          provider: providerId,
+          duration: 0,
+          error: "Missing required fields: providerId, text",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      const registry = PluginRegistry.getInstance();
+      const plugin = registry.get(providerId);
+
+      if (!plugin || plugin.type !== "tts") {
+        res.status(404).json({
+          success: false,
+          provider: providerId,
+          duration: 0,
+          error: "TTS provider not found",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      // Synthesize speech
+      const provider = plugin.instance as TTSProvider;
+      const audioBuffer = await provider.synthesize(text, {
+        voice,
+        speed,
+        instructions,
+      });
+
+      const duration = Date.now() - startTime;
+
+      res.json({
+        success: true,
+        provider: providerId,
+        duration,
+        audioBase64: audioBuffer.toString("base64"),
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      res.status(500).json({
+        success: false,
+        provider: req.body.providerId,
+        duration,
+        error: error instanceof Error ? error.message : "Test failed",
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  /**
+   * POST /api/voice/test-stt
+   * Test speech-to-text transcription
+   */
+  async testSTT(
+    req: Request,
+    res: Response<TestSTTResponse>,
+  ): Promise<void> {
+    const startTime = Date.now();
+
+    try {
+      const { providerId, language } = req.body;
+      const audioFile = (req as any).files?.audio;
+
+      if (!providerId || !audioFile) {
+        res.status(400).json({
+          success: false,
+          provider: providerId,
+          duration: 0,
+          error: "Missing required fields: providerId, audio file",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      const registry = PluginRegistry.getInstance();
+      const plugin = registry.get(providerId);
+
+      if (!plugin || plugin.type !== "stt") {
+        res.status(404).json({
+          success: false,
+          provider: providerId,
+          duration: 0,
+          error: "STT provider not found",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      // Transcribe audio
+      const provider = plugin.instance as STTProvider;
+      const session = provider.createSession();
+      await session.connect();
+
+      const audioBuffer = audioFile.data as Buffer;
+      session.sendAudio(audioBuffer);
+
+      const transcript = await session.waitForTranscript(30000);
+      session.close();
+
+      const duration = Date.now() - startTime;
+
+      res.json({
+        success: true,
+        provider: providerId,
+        duration,
+        transcript,
+        confidence: 0.95,
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      res.status(500).json({
+        success: false,
+        provider: req.body?.providerId,
+        duration,
+        error: error instanceof Error ? error.message : "Test failed",
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  /**
+   * GET /api/voice/health
+   * Get voice system health status
+   */
+  async getHealth(req: Request, res: Response<VoiceSystemHealth>): Promise<void> {
+    try {
+      const registry = PluginRegistry.getInstance();
+      const providers: { [providerId: string]: { available: boolean; healthy: boolean; error?: string } } = {};
+
+      registry.getAll().forEach((plugin: any) => {
+        providers[plugin.id] = {
+          available: true,
+          healthy: true,
+        };
+      });
+
+      const health: VoiceSystemHealth = {
+        online: true,
+        providers: providers as any,
+        systemStatus: {
+          gpu: true,
+          memory: 8192,
+          cpu: 45,
+          storageAvailable: true,
+        },
+        timestamp: Date.now(),
+      };
+
+      res.json(health);
+    } catch (error) {
+      res.status(500).json({
+        online: false,
+        providers: {},
+        systemStatus: {},
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  /**
+   * GET /api/voice/discovery
+   * Discover available and missing voice providers
+   */
+  async discovery(req: Request, res: Response<DiscoveryResponse>): Promise<void> {
+    try {
+      const registry = PluginRegistry.getInstance();
+      const installed = registry.getAll();
+
+      const available = installed.map((plugin: any) => ({
+        id: plugin.id,
+        name: plugin.name,
+        description: (plugin.instance as TTSProvider).metadata
+          .description,
+        installCommand: undefined,
+      })) as any;
+
+      const response: DiscoveryResponse = {
+        available,
+        notInstalled: [],
+        timestamp: Date.now(),
+      };
+
+      res.json(response);
+    } catch (error) {
+      res.status(500).json({
+        available: [],
+        notInstalled: [],
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  // Helper methods
+
+  private getProviderConfig(type: "stt" | "tts"): Record<string, unknown> {
+    return type === "stt"
+      ? { models: ["tiny", "base", "small", "medium", "large"] }
+      : { voices: ["default", "en_US-neural"] };
+  }
+
+  private getProviderCapabilities(
+    providerId: string,
+    type: "stt" | "tts",
+  ): Partial<GetCapabilitiesResponse> {
+    if (type === "tts") {
+      return {
+        voices: [
+          { id: "alloy", name: "Alloy" },
+          { id: "echo", name: "Echo" },
+          { id: "fable", name: "Fable" },
+        ],
+        speeds: { min: 0.25, max: 4, default: 1 },
+        supportedInstructions: true,
+      };
+    }
+
+    return {
+      languages: [
+        { code: "en", name: "English" },
+        { code: "es", name: "Spanish" },
+        { code: "fr", name: "French" },
+      ],
+    };
+  }
+}
+
+/**
+ * Register voice API endpoints
+ */
+export function registerVoiceApi(router: Router): void {
+  const handler = new VoiceApiHandler();
+
+  // GET endpoints
+  router.get("/api/voice/providers", (req, res) =>
+    handler.getProviders(req, res),
+  );
+  router.get("/api/voice/config", (req, res) => handler.getConfig(req, res));
+  router.get("/api/voice/providers/:providerId/status", (req, res) =>
+    handler.getProviderStatus(req, res),
+  );
+  router.get("/api/voice/providers/:providerId/capabilities", (req, res) =>
+    handler.getCapabilities(req, res),
+  );
+  router.get("/api/voice/health", (req, res) => handler.getHealth(req, res));
+  router.get("/api/voice/discovery", (req, res) =>
+    handler.discovery(req, res),
+  );
+
+  // POST endpoints
+  router.post("/api/voice/config", (req, res) => handler.setConfig(req, res));
+  router.post("/api/voice/test-tts", (req, res) =>
+    handler.testTTS(req, res),
+  );
+  router.post("/api/voice/test-stt", (req, res) =>
+    handler.testSTT(req, res),
+  );
+}

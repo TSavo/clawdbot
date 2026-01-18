@@ -1,0 +1,358 @@
+# Build stage - compile clawdbot application
+FROM node:22-bookworm as builder
+
+# Install Bun
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+RUN corepack enable
+
+WORKDIR /app
+
+# Copy only necessary files for dependencies resolution
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY ui/package.json ./ui/package.json
+COPY patches ./patches
+COPY scripts ./scripts
+
+# Install dependencies with frozen lockfile
+RUN pnpm install --frozen-lockfile
+
+# Copy source code
+COPY . .
+
+# Build application
+RUN pnpm build
+RUN pnpm ui:install
+RUN pnpm ui:build
+
+# Runtime stage - test environment
+FROM node:22-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies for browser automation and audio processing
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Browser and display
+    chromium \
+    chromium-driver \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    libfontconfig1 \
+    libgconf-2-4 \
+    libgtk-3-0 \
+    libharfbuzz0b \
+    libx11-6 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxinerama1 \
+    libxrandr2 \
+    libxrender1 \
+    libxss1 \
+    libxtst6 \
+    xvfb \
+    x11-utils \
+    x11-apps \
+    x11vnc \
+    \
+    # VNC and web interface
+    novnc \
+    websockify \
+    \
+    # Audio and voice processing
+    python3 \
+    python3-pip \
+    python3-dev \
+    sox \
+    libsox-fmt-all \
+    alsa-utils \
+    pulseaudio \
+    pulseaudio-utils \
+    \
+    # Utilities
+    curl \
+    wget \
+    git \
+    jq \
+    socat \
+    netcat-traditional \
+    ca-certificates \
+    bash \
+    sudo \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages for Whisper and audio processing
+RUN pip install --no-cache-dir \
+    openai-whisper \
+    librosa \
+    numpy \
+    scipy \
+    pydub
+
+# Install Bun in runtime stage
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+WORKDIR /app
+
+# Copy built application from builder
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/pnpm-lock.yaml ./pnpm-lock.yaml
+COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY --from=builder /app/.npmrc ./.npmrc
+COPY --from=builder /app/patches ./patches
+COPY --from=builder /app/scripts ./scripts
+COPY --from=builder /app/ui/dist ./ui/dist
+
+# Copy test utilities and healthcheck scripts
+COPY scripts/ ./scripts/
+
+# Create non-root user for browser automation (Chromium security)
+RUN useradd -m -s /bin/bash testuser && \
+    usermod -aG sudo testuser && \
+    echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/testuser
+
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/data \
+    /app/sessions \
+    /app/logs \
+    /tmp/.X11-unix \
+    /run/dbus \
+    /var/run/pulse \
+    && chown -R testuser:testuser /app \
+    && chmod 1777 /tmp/.X11-unix
+
+# Create supervisor configuration directory
+RUN mkdir -p /etc/supervisor/conf.d
+
+# Create supervisor configuration for multiple services
+RUN cat > /etc/supervisor/conf.d/services.conf << 'SUPERVISOR_EOF'
+[supervisord]
+nodaemon=true
+user=root
+logfile=/app/logs/supervisord.log
+pidfile=/var/run/supervisord.pid
+
+[program:xvfb]
+command=/usr/bin/Xvfb :99 -screen 0 1280x1024x24 -ac
+stdout_logfile=/app/logs/xvfb.log
+stderr_logfile=/app/logs/xvfb.err.log
+autorestart=true
+priority=100
+
+[program:x11vnc]
+command=/usr/bin/x11vnc -display :99 -listen localhost -nopw -forever -noipv6
+environment=DISPLAY=:99
+stdout_logfile=/app/logs/x11vnc.log
+stderr_logfile=/app/logs/x11vnc.err.log
+autorestart=true
+priority=200
+depends_on=xvfb
+
+[program:websockify]
+command=/usr/bin/websockify --web=/usr/share/novnc 6080 localhost:5900
+stdout_logfile=/app/logs/websockify.log
+stderr_logfile=/app/logs/websockify.err.log
+autorestart=true
+priority=300
+depends_on=x11vnc
+
+[program:pulseaudio]
+command=/usr/bin/pulseaudio --no-daemon --log-target=stderr
+environment=DISPLAY=:99
+stdout_logfile=/app/logs/pulseaudio.log
+stderr_logfile=/app/logs/pulseaudio.err.log
+autorestart=true
+priority=150
+user=testuser
+
+[program:clawdbot-ui]
+command=/usr/local/bin/node /app/dist/index.js
+environment=NODE_ENV=test,DISPLAY=:99,XAUTHORITY=/tmp/.Xauthority
+stdout_logfile=/app/logs/clawdbot-ui.log
+stderr_logfile=/app/logs/clawdbot-ui.err.log
+autorestart=true
+priority=400
+user=testuser
+directory=/app
+
+[inet_http_server]
+port=127.0.0.1:9001
+
+[supervisorctl]
+serverurl=unix:///run/supervisor.sock
+
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory=supervisor.rpcinterface:make_main_rpcinterface
+SUPERVISOR_EOF
+
+# Create entrypoint script for initialization and service startup
+RUN cat > /app/entrypoint.sh << 'ENTRYPOINT_EOF'
+#!/bin/bash
+set -e
+
+# Create log directory
+mkdir -p /app/logs
+
+echo "Initializing voice provider UI test environment..."
+
+# Export required environment variables
+export DISPLAY=:99
+export NODE_ENV=test
+export XAUTHORITY=/tmp/.Xauthority
+
+# Create .Xauthority file for display access
+touch /tmp/.Xauthority
+chmod 666 /tmp/.Xauthority
+
+# Install runtime dependencies if needed
+if [ ! -d "/app/node_modules" ]; then
+    echo "Installing runtime dependencies..."
+    cd /app
+    pnpm install --frozen-lockfile --prod
+fi
+
+echo "Starting services with supervisor..."
+
+# Start supervisord (manages all services)
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/services.conf
+ENTRYPOINT_EOF
+
+RUN chmod +x /app/entrypoint.sh
+
+# Create healthcheck script
+RUN cat > /app/healthcheck.sh << 'HEALTHCHECK_EOF'
+#!/bin/bash
+
+# Check if all services are healthy
+check_service() {
+    local port=$1
+    local name=$2
+    local max_attempts=30
+    local attempt=0
+
+    while [ $attempt -lt $max_attempts ]; do
+        if nc -z localhost $port 2>/dev/null; then
+            echo "$name is healthy (port $port)"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        echo "Waiting for $name... (attempt $attempt/$max_attempts)"
+        sleep 1
+    done
+
+    echo "ERROR: $name failed to start (port $port)"
+    return 1
+}
+
+echo "Performing healthcheck..."
+
+# Check UI service on port 3000
+check_service 3000 "Clawdbot UI" || exit 1
+
+# Check X11 display on port 6000
+check_service 6000 "X11 Display" || exit 1
+
+# Check noVNC on port 6080
+check_service 6080 "noVNC" || exit 1
+
+# Check browser control port (agent-browser)
+check_service 18791 "Browser Control" || {
+    echo "WARNING: Browser control port 18791 not yet ready, but may start later"
+}
+
+# Verify X display is accessible
+if DISPLAY=:99 xset q 2>&1 | grep -q "Screen"; then
+    echo "X display :99 is accessible"
+else
+    echo "WARNING: X display :99 may not be fully ready"
+fi
+
+# Verify supervisor is running
+if supervisorctl status 2>/dev/null | grep -q "RUNNING"; then
+    echo "Supervisor services are running"
+else
+    echo "ERROR: Supervisor services not running"
+    supervisorctl status || true
+    exit 1
+fi
+
+echo "All essential services are healthy"
+exit 0
+HEALTHCHECK_EOF
+
+RUN chmod +x /app/healthcheck.sh
+
+# Create service discovery script
+RUN cat > /app/connection-info.sh << 'CONNINFO_EOF'
+#!/bin/bash
+
+echo "==============================================================="
+echo "Voice Provider UI Test Environment - Connection Details"
+echo "==============================================================="
+echo ""
+echo "Web UI:"
+echo "  URL: http://localhost:3000"
+echo "  Status: Ready for voice provider testing"
+echo ""
+echo "Visual Inspection (noVNC):"
+echo "  URL: http://localhost:6080/vnc.html"
+echo "  Display: :99"
+echo "  VNC Port: 5900 (raw)"
+echo ""
+echo "Browser Control (agent-browser):"
+echo "  Endpoint: http://localhost:18791"
+echo "  Protocol: WebSocket CDP (Chrome DevTools Protocol)"
+echo ""
+echo "Container Information:"
+echo "  Name: $HOSTNAME"
+echo "  Node.js: $(node --version)"
+echo "  Chromium: $(chromium --version || echo 'available')"
+echo "  Python: $(python3 --version)"
+echo ""
+echo "Audio/Voice Processing:"
+echo "  Whisper: $(pip show openai-whisper | grep Version || echo 'installed')"
+echo "  PulseAudio: $(pactl info | grep 'Server name' || echo 'initializing')"
+echo ""
+echo "Log Files:"
+echo "  Supervisor: /app/logs/supervisord.log"
+echo "  Clawdbot UI: /app/logs/clawdbot-ui.log"
+echo "  X11 VNC: /app/logs/x11vnc.log"
+echo "  WebSocketify: /app/logs/websockify.log"
+echo "  PulseAudio: /app/logs/pulseaudio.log"
+echo ""
+echo "Mounted Volume:"
+echo "  Host: (current directory)"
+echo "  Container: /app"
+echo ""
+echo "==============================================================="
+CONNINFO_EOF
+
+RUN chmod +x /app/connection-info.sh
+
+# Set Node path for built dependencies
+RUN corepack enable
+
+# Install only production dependencies for runtime
+ENV NODE_ENV=test
+ENV PATH="/root/.bun/bin:${PATH}"
+
+# Expose ports
+EXPOSE 3000 5900 6080 18791 9222 9001
+
+# Healthcheck
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+    CMD /app/healthcheck.sh
+
+# Set entrypoint
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+CMD [""]
