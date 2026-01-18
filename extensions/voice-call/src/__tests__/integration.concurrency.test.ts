@@ -16,7 +16,6 @@ import fs from 'fs';
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import path from "node:path";
 import os from "node:os";
-import fs from "fs";
 
 import { CallManager } from "../manager.js";
 import {
