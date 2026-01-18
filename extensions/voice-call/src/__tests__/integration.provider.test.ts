@@ -5,6 +5,7 @@
  * and cross-provider consistency.
  */
 
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -24,8 +25,12 @@ describe("Provider System Integration", () => {
     mockProvider = new MockVoiceProvider();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     mockProvider.reset();
+    // Clean up temp directory to avoid call state leaking between tests
+    if (tempDir && fs.existsSync(tempDir)) {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   describe("Provider Selection", () => {

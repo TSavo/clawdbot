@@ -1015,7 +1015,7 @@ describe("6. Error Scenarios", () => {
     try {
       provider.setFailCount(1);
       await provider.synthesize("Test");
-    } catch {
+    } catch (error) {
       expect(error).toBeDefined();
     }
   });

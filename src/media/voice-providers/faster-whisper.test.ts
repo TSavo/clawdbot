@@ -403,7 +403,7 @@ describe("FasterWhisperExecutor", () => {
 
       try {
         await executor.transcribe(audio);
-      } catch {
+      } catch (error) {
         expect((error as any).provider).toBe("test-faster-whisper");
       }
     });

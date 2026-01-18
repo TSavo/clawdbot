@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { ChatterboxExecutor } from "./chatterbox.js";
+import { VoiceProviderError } from "./executor.js";
 
 /**
  * Mock global fetch

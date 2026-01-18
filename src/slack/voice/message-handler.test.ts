@@ -2,13 +2,13 @@
  * Tests for Slack Voice Message Handler
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { SlackVoiceMessageHandler, type SlackVoiceFile } from "./message-handler.js";
 import type { WebClient as SlackWebClient } from "@slack/web-api";
 import type { RuntimeEnv } from "../../runtime.js";
 import { tmpdir } from "os";
 import { join } from "path";
-import { writeFile } from "fs/promises";
+import { mkdir, writeFile } from "fs/promises";
 
 describe("SlackVoiceMessageHandler", () => {
   let handler: SlackVoiceMessageHandler;

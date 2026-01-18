@@ -8,6 +8,7 @@ import type { WebClient as SlackWebClient } from "@slack/web-api";
 import type { RuntimeEnv } from "../../runtime.js";
 import { tmpdir } from "os";
 import { join } from "path";
+import { mkdir } from "fs/promises";
 
 describe("SlackVoiceResponseHandler", () => {
   let handler: SlackVoiceResponseHandler;
