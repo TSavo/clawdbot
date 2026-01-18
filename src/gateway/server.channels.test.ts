@@ -73,8 +73,7 @@ describe("gateway server channels", () => {
   });
 
   test("channels.logout clears telegram bot token from config", async () => {
-    testTokenBackup = process.env.TELEGRAM_BOT_TOKEN;
-    delete process.env.TELEGRAM_BOT_TOKEN;
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", undefined);
     const { readConfigFileSnapshot, writeConfigFile } = await loadConfigHelpers();
     await writeConfigFile({
       channels: {
