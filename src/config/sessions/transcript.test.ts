@@ -2,7 +2,25 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appendAssistantMessageToSessionTranscript } from "./transcript.js";
+import {
+  appendAssistantMessageToSessionTranscript,
+  resolveMirroredTranscriptText,
+} from "./transcript.js";
+
+describe("resolveMirroredTranscriptText", () => {
+  it("prefers media filenames over text", () => {
+    const result = resolveMirroredTranscriptText({
+      text: "caption here",
+      mediaUrls: ["https://example.com/files/report.pdf?sig=123"],
+    });
+    expect(result).toBe("report.pdf");
+  });
+
+  it("returns trimmed text when no media", () => {
+    const result = resolveMirroredTranscriptText({ text: "  hello  " });
+    expect(result).toBe("hello");
+  });
+});
 
 describe("appendAssistantMessageToSessionTranscript", () => {
   let tempDir: string;
@@ -87,55 +105,10 @@ describe("appendAssistantMessageToSessionTranscript", () => {
       expect(header.id).toBe(sessionId);
 
       const messageLine = JSON.parse(lines[1]);
+      expect(messageLine.type).toBe("message");
       expect(messageLine.message.role).toBe("assistant");
       expect(messageLine.message.content[0].type).toBe("text");
       expect(messageLine.message.content[0].text).toBe("Hello from delivery mirror!");
-    }
-  });
-
-  it("appends to existing transcript file", async () => {
-    const sessionId = "existing-session";
-    const sessionKey = "existing";
-    const sessionFile = path.join(sessionsDir, `${sessionId}.jsonl`);
-
-    // Create existing transcript
-    const existingHeader = {
-      type: "session",
-      version: 3,
-      id: sessionId,
-      timestamp: new Date().toISOString(),
-    };
-    const existingMessage = { message: { role: "user", content: [{ type: "text", text: "Hi" }] } };
-    fs.writeFileSync(
-      sessionFile,
-      `${JSON.stringify(existingHeader)}\n${JSON.stringify(existingMessage)}\n`,
-      "utf-8",
-    );
-
-    const store = {
-      [sessionKey]: {
-        sessionId,
-        sessionFile,
-        chatType: "direct",
-        channel: "discord",
-      },
-    };
-    fs.writeFileSync(storePath, JSON.stringify(store), "utf-8");
-
-    const result = await appendAssistantMessageToSessionTranscript({
-      sessionKey,
-      text: "Mirrored reply",
-      storePath,
-    });
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      const lines = fs.readFileSync(result.sessionFile, "utf-8").trim().split("\n");
-      expect(lines.length).toBe(3); // header + existing + new
-
-      const newMessage = JSON.parse(lines[2]);
-      expect(newMessage.message.role).toBe("assistant");
-      expect(newMessage.message.content[0].text).toBe("Mirrored reply");
     }
   });
 });

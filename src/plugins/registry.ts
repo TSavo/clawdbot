@@ -11,6 +11,7 @@ import type {
   ClawdbotPluginChannelRegistration,
   ClawdbotPluginCliRegistrar,
   ClawdbotPluginHttpHandler,
+  ProviderPlugin,
   ClawdbotPluginService,
   ClawdbotPluginToolContext,
   ClawdbotPluginToolFactory,
@@ -18,12 +19,15 @@ import type {
   PluginDiagnostic,
   PluginLogger,
   PluginOrigin,
+  PluginKind,
 } from "./types.js";
+import type { PluginRuntime } from "./runtime/types.js";
 
 export type PluginToolRegistration = {
   pluginId: string;
   factory: ClawdbotPluginToolFactory;
   names: string[];
+  optional: boolean;
   source: string;
 };
 
@@ -47,6 +51,12 @@ export type PluginChannelRegistration = {
   source: string;
 };
 
+export type PluginProviderRegistration = {
+  pluginId: string;
+  provider: ProviderPlugin;
+  source: string;
+};
+
 export type PluginServiceRegistration = {
   pluginId: string;
   service: ClawdbotPluginService;
@@ -58,6 +68,7 @@ export type PluginRecord = {
   name: string;
   version?: string;
   description?: string;
+  kind?: PluginKind;
   source: string;
   origin: PluginOrigin;
   workspaceDir?: string;
@@ -66,18 +77,21 @@ export type PluginRecord = {
   error?: string;
   toolNames: string[];
   channelIds: string[];
+  providerIds: string[];
   gatewayMethods: string[];
   cliCommands: string[];
   services: string[];
   httpHandlers: number;
   configSchema: boolean;
   configUiHints?: Record<string, PluginConfigUiHint>;
+  configJsonSchema?: Record<string, unknown>;
 };
 
 export type PluginRegistry = {
   plugins: PluginRecord[];
   tools: PluginToolRegistration[];
   channels: PluginChannelRegistration[];
+  providers: PluginProviderRegistration[];
   gatewayHandlers: GatewayRequestHandlers;
   httpHandlers: PluginHttpRegistration[];
   cliRegistrars: PluginCliRegistration[];
@@ -88,6 +102,7 @@ export type PluginRegistry = {
 export type PluginRegistryParams = {
   logger: PluginLogger;
   coreGatewayHandlers?: GatewayRequestHandlers;
+  runtime: PluginRuntime;
 };
 
 export function createPluginRegistry(registryParams: PluginRegistryParams) {
@@ -95,6 +110,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     plugins: [],
     tools: [],
     channels: [],
+    providers: [],
     gatewayHandlers: {},
     httpHandlers: [],
     cliRegistrars: [],
@@ -110,9 +126,10 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
   const registerTool = (
     record: PluginRecord,
     tool: AnyAgentTool | ClawdbotPluginToolFactory,
-    opts?: { name?: string; names?: string[] },
+    opts?: { name?: string; names?: string[]; optional?: boolean },
   ) => {
     const names = opts?.names ?? (opts?.name ? [opts.name] : []);
+    const optional = opts?.optional === true;
     const factory: ClawdbotPluginToolFactory =
       typeof tool === "function" ? tool : (_ctx: ClawdbotPluginToolContext) => tool;
 
@@ -128,6 +145,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       pluginId: record.id,
       factory,
       names: normalized,
+      optional,
       source: record.source,
     });
   };
@@ -189,6 +207,35 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     });
   };
 
+  const registerProvider = (record: PluginRecord, provider: ProviderPlugin) => {
+    const id = typeof provider?.id === "string" ? provider.id.trim() : "";
+    if (!id) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: "provider registration missing id",
+      });
+      return;
+    }
+    const existing = registry.providers.find((entry) => entry.provider.id === id);
+    if (existing) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `provider already registered: ${id} (${existing.pluginId})`,
+      });
+      return;
+    }
+    record.providerIds.push(id);
+    registry.providers.push({
+      pluginId: record.id,
+      provider,
+      source: record.source,
+    });
+  };
+
   const registerCli = (
     record: PluginRecord,
     registrar: ClawdbotPluginCliRegistrar,
@@ -237,10 +284,12 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       source: record.source,
       config: params.config,
       pluginConfig: params.pluginConfig,
+      runtime: registryParams.runtime,
       logger: normalizeLogger(registryParams.logger),
       registerTool: (tool, opts) => registerTool(record, tool, opts),
       registerHttpHandler: (handler) => registerHttpHandler(record, handler),
       registerChannel: (registration) => registerChannel(record, registration),
+      registerProvider: (provider) => registerProvider(record, provider),
       registerGatewayMethod: (method, handler) => registerGatewayMethod(record, method, handler),
       registerCli: (registrar, opts) => registerCli(record, registrar, opts),
       registerService: (service) => registerService(record, service),
@@ -254,6 +303,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     pushDiagnostic,
     registerTool,
     registerChannel,
+    registerProvider,
     registerGatewayMethod,
     registerCli,
     registerService,

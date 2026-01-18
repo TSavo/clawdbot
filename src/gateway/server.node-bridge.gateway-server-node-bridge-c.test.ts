@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import {
@@ -14,6 +14,7 @@ import {
   startGatewayServer,
   startServerWithClient,
   testState,
+  writeSessionStore,
 } from "./test-helpers.js";
 
 const decodeWsData = (data: unknown): string => {
@@ -39,100 +40,64 @@ async function _waitFor(condition: () => boolean, timeoutMs = 1500) {
 installGatewayTestHooks();
 
 describe("gateway server node/bridge", () => {
-  let testServer: Awaited<ReturnType<typeof startServerWithClient>> | null = null;
+  test("bridge voice transcript defaults to main session", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-gw-"));
+    testState.sessionStorePath = path.join(dir, "sessions.json");
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          updatedAt: Date.now(),
+          lastChannel: "whatsapp",
+          lastTo: "+1555",
+        },
+      },
+    });
 
-  afterEach(async () => {
-    if (testServer) {
-      if (testServer.ws.readyState !== WebSocket.CLOSED && testServer.ws.readyState !== WebSocket.CLOSING) {
-        await new Promise<void>((resolve) => {
-          const timeout = setTimeout(resolve, 1000);
-          testServer!.ws.once("close", () => {
-            clearTimeout(timeout);
-            resolve();
-          });
-          testServer!.ws.close(1000, "test cleanup");
-        });
-      }
-      await testServer.server.close();
-      testServer = null;
-    }
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    const bridgeCall = bridgeStartCalls.at(-1);
+    expect(bridgeCall?.onEvent).toBeDefined();
+
+    const spy = vi.mocked(agentCommand);
+    const beforeCalls = spy.mock.calls.length;
+
+    await bridgeCall?.onEvent?.("ios-node", {
+      event: "voice.transcript",
+      payloadJSON: JSON.stringify({ text: "hello" }),
+    });
+
+    expect(spy.mock.calls.length).toBe(beforeCalls + 1);
+    const call = spy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(call.sessionId).toBe("sess-main");
+    expect(call.sessionKey).toBe("main");
+    expect(call.deliver).toBe(false);
+    expect(call.messageChannel).toBe("node");
+
+    const stored = JSON.parse(await fs.readFile(testState.sessionStorePath, "utf-8")) as Record<
+      string,
+      { sessionId?: string } | undefined
+    >;
+    expect(stored["agent:main:main"]?.sessionId).toBe("sess-main");
+    expect(stored["node-ios-node"]).toBeUndefined();
+
+    await server.close();
   });
-
-  test(
-    "bridge voice transcript defaults to main session",
-    async () => {
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-gw-"));
-      testState.sessionStorePath = path.join(dir, "sessions.json");
-      await fs.writeFile(
-        testState.sessionStorePath,
-        JSON.stringify(
-          {
-            main: {
-              sessionId: "sess-main",
-              updatedAt: Date.now(),
-              lastChannel: "whatsapp",
-              lastTo: "+1555",
-            },
-          },
-          null,
-          2,
-        ),
-        "utf-8",
-      );
-
-      const port = await getFreePort();
-      const server = await startGatewayServer(port);
-      const bridgeCall = bridgeStartCalls.at(-1);
-      expect(bridgeCall?.onEvent).toBeDefined();
-
-      const spy = vi.mocked(agentCommand);
-      const beforeCalls = spy.mock.calls.length;
-
-      await bridgeCall?.onEvent?.("ios-node", {
-        event: "voice.transcript",
-        payloadJSON: JSON.stringify({ text: "hello" }),
-      });
-
-      expect(spy.mock.calls.length).toBe(beforeCalls + 1);
-      const call = spy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
-      expect(call.sessionId).toBe("sess-main");
-      expect(call.sessionKey).toBe("main");
-      expect(call.deliver).toBe(false);
-      expect(call.messageChannel).toBe("node");
-
-      const stored = JSON.parse(await fs.readFile(testState.sessionStorePath, "utf-8")) as Record<
-        string,
-        { sessionId?: string } | undefined
-      >;
-      expect(stored.main?.sessionId).toBe("sess-main");
-      expect(stored["node-ios-node"]).toBeUndefined();
-
-      // Close server without waiting (afterEach will handle cleanup)
-      void server.close();
-    },
-    10_000
-  );
 
   test("bridge voice transcript triggers chat events for webchat clients", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-gw-"));
     testState.sessionStorePath = path.join(dir, "sessions.json");
-    await fs.writeFile(
-      testState.sessionStorePath,
-      JSON.stringify(
-        {
-          main: {
-            sessionId: "sess-main",
-            updatedAt: Date.now(),
-          },
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          updatedAt: Date.now(),
         },
-        null,
-        2,
-      ),
-      "utf-8",
-    );
+      },
+    });
 
-    testServer = await startServerWithClient();
-    await connectOk(testServer.ws, {
+    const { server, ws } = await startServerWithClient();
+    await connectOk(ws, {
       client: {
         id: GATEWAY_CLIENT_NAMES.WEBCHAT,
         version: "1.0.0",
@@ -160,7 +125,7 @@ describe("gateway server node/bridge", () => {
       event: string;
       payload?: unknown;
     }>((resolve) => {
-      testServer!.ws.on("message", (data) => {
+      ws.on("message", (data) => {
         const obj = JSON.parse(decodeWsData(data));
         if (isVoiceFinalChatEvent(obj)) {
           resolve(obj as never);
@@ -199,73 +164,65 @@ describe("gateway server node/bridge", () => {
         ? (payload.message as Record<string, unknown>)
         : {};
     expect(message.role).toBe("assistant");
+
+    ws.close();
+    await server.close();
   });
 
-  test(
-    "bridge chat.abort cancels while saving the session store",
-    async () => {
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-gw-"));
-      testState.sessionStorePath = path.join(dir, "sessions.json");
-      await fs.writeFile(
-        testState.sessionStorePath,
-        JSON.stringify(
-          {
-            main: {
-              sessionId: "sess-main",
-              updatedAt: Date.now(),
-            },
-          },
-          null,
-          2,
-        ),
-        "utf-8",
-      );
+  test("bridge chat.abort cancels while saving the session store", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-gw-"));
+    testState.sessionStorePath = path.join(dir, "sessions.json");
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          updatedAt: Date.now(),
+        },
+      },
+    });
 
-      sessionStoreSaveDelayMs.value = 120;
+    sessionStoreSaveDelayMs.value = 120;
 
-      const port = await getFreePort();
-      const server = await startGatewayServer(port);
-      const bridgeCall = bridgeStartCalls.at(-1);
-      expect(bridgeCall?.onRequest).toBeDefined();
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    const bridgeCall = bridgeStartCalls.at(-1);
+    expect(bridgeCall?.onRequest).toBeDefined();
 
-      const spy = vi.mocked(agentCommand);
-      spy.mockImplementationOnce(async (opts) => {
-        const signal = (opts as { abortSignal?: AbortSignal }).abortSignal;
-        await new Promise<void>((resolve) => {
-          if (!signal) return resolve();
-          if (signal.aborted) return resolve();
-          signal.addEventListener("abort", () => resolve(), { once: true });
-        });
+    const spy = vi.mocked(agentCommand);
+    spy.mockImplementationOnce(async (opts) => {
+      const signal = (opts as { abortSignal?: AbortSignal }).abortSignal;
+      await new Promise<void>((resolve) => {
+        if (!signal) return resolve();
+        if (signal.aborted) return resolve();
+        signal.addEventListener("abort", () => resolve(), { once: true });
       });
+    });
 
-      const sendP = bridgeCall?.onRequest?.("ios-node", {
-        id: "send-abort-save-bridge-1",
-        method: "chat.send",
-        paramsJSON: JSON.stringify({
-          sessionKey: "main",
-          message: "hello",
-          idempotencyKey: "idem-abort-save-bridge-1",
-          timeoutMs: 30_000,
-        }),
-      });
+    const sendP = bridgeCall?.onRequest?.("ios-node", {
+      id: "send-abort-save-bridge-1",
+      method: "chat.send",
+      paramsJSON: JSON.stringify({
+        sessionKey: "main",
+        message: "hello",
+        idempotencyKey: "idem-abort-save-bridge-1",
+        timeoutMs: 30_000,
+      }),
+    });
 
-      const abortRes = await bridgeCall?.onRequest?.("ios-node", {
-        id: "abort-save-bridge-1",
-        method: "chat.abort",
-        paramsJSON: JSON.stringify({
-          sessionKey: "main",
-          runId: "idem-abort-save-bridge-1",
-        }),
-      });
+    const abortRes = await bridgeCall?.onRequest?.("ios-node", {
+      id: "abort-save-bridge-1",
+      method: "chat.abort",
+      paramsJSON: JSON.stringify({
+        sessionKey: "main",
+        runId: "idem-abort-save-bridge-1",
+      }),
+    });
 
-      expect(abortRes?.ok).toBe(true);
+    expect(abortRes?.ok).toBe(true);
 
-      const sendRes = await sendP;
-      expect(sendRes?.ok).toBe(true);
+    const sendRes = await sendP;
+    expect(sendRes?.ok).toBe(true);
 
-      // Close server without waiting (afterEach will handle cleanup)
-      void server.close();
-    },
-    10_000
-  );
+    await server.close();
+  });
 });

@@ -19,7 +19,7 @@ import {
 } from "../commands/onboard-helpers.js";
 import { promptRemoteGatewayConfig } from "../commands/onboard-remote.js";
 import { setupSkills } from "../commands/onboard-skills.js";
-import { setupVoiceProviders } from "../commands/onboarding/onboarding.voice-providers.js";
+import { setupInternalHooks } from "../commands/onboard-hooks.js";
 import type {
   GatewayAuthChoice,
   OnboardMode,
@@ -399,25 +399,15 @@ export async function runOnboardingWizard(
     skipBootstrap: Boolean(nextConfig.agents?.defaults?.skipBootstrap),
   });
 
-  if (opts.skipVoice) {
-    await prompter.note("Skipping voice providers setup.", "Voice");
-  } else {
-    const voiceResult = await setupVoiceProviders({
-      cfg: nextConfig,
-      prompter,
-      runtime,
-    });
-    nextConfig = voiceResult.cfg;
-    if (voiceResult.voiceProvidersAdded) {
-      runtime.log("Voice providers configured");
-    }
-  }
-
   if (opts.skipSkills) {
     await prompter.note("Skipping skills setup.", "Skills");
   } else {
     nextConfig = await setupSkills(nextConfig, workspaceDir, runtime, prompter);
   }
+
+  // Setup hooks (session memory on /new)
+  nextConfig = await setupInternalHooks(nextConfig, runtime, prompter);
+
   nextConfig = applyWizardMetadata(nextConfig, { command: "onboard", mode });
   await writeConfigFile(nextConfig);
 

@@ -20,20 +20,23 @@ import {
 } from "../../agents/model-selection.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
 import { buildWorkspaceSkillSnapshot } from "../../agents/skills.js";
+import { getSkillsSnapshotVersion } from "../../agents/skills/refresh.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { hasNonzeroUsage } from "../../agents/usage.js";
 import { ensureAgentWorkspace } from "../../agents/workspace.js";
 import {
   formatXHighModelHint,
   normalizeThinkLevel,
+  normalizeVerboseLevel,
   supportsXHighThinking,
 } from "../../auto-reply/thinking.js";
-import type { CliDeps } from "../../cli/deps.js";
+import { createOutboundSendDeps, type CliDeps } from "../../cli/outbound-send-deps.js";
 import type { ClawdbotConfig } from "../../config/config.js";
-import { resolveSessionTranscriptPath, saveSessionStore } from "../../config/sessions.js";
+import { resolveSessionTranscriptPath, updateSessionStore } from "../../config/sessions.js";
 import type { AgentDefaultsConfig } from "../../config/types.js";
 import { registerAgentRunContext } from "../../infra/agent-events.js";
 import { deliverOutboundPayloads } from "../../infra/outbound/deliver.js";
+import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
 import { buildAgentMainSessionKey, normalizeAgentId } from "../../routing/session-key.js";
 import type { CronJob } from "../types.js";
 import { resolveDeliveryTarget } from "./delivery-target.js";
@@ -207,10 +210,15 @@ export async function runCronIsolatedAgentTurn(params: {
   const base = `[cron:${params.job.id} ${params.job.name}] ${params.message}`.trim();
   const commandBody = base;
 
-  const needsSkillsSnapshot = cronSession.isNewSession || !cronSession.sessionEntry.skillsSnapshot;
+  const existingSnapshot = cronSession.sessionEntry.skillsSnapshot;
+  const skillsSnapshotVersion = getSkillsSnapshotVersion(workspaceDir);
+  const needsSkillsSnapshot =
+    !existingSnapshot || existingSnapshot.version !== skillsSnapshotVersion;
   const skillsSnapshot = needsSkillsSnapshot
     ? buildWorkspaceSkillSnapshot(workspaceDir, {
         config: cfgWithAgentDefaults,
+        eligibility: { remote: getRemoteSkillEligibility() },
+        snapshotVersion: skillsSnapshotVersion,
       })
     : cronSession.sessionEntry.skillsSnapshot;
   if (needsSkillsSnapshot && skillsSnapshot) {
@@ -220,13 +228,17 @@ export async function runCronIsolatedAgentTurn(params: {
       skillsSnapshot,
     };
     cronSession.store[agentSessionKey] = cronSession.sessionEntry;
-    await saveSessionStore(cronSession.storePath, cronSession.store);
+    await updateSessionStore(cronSession.storePath, (store) => {
+      store[agentSessionKey] = cronSession.sessionEntry;
+    });
   }
 
   // Persist systemSent before the run, mirroring the inbound auto-reply behavior.
   cronSession.sessionEntry.systemSent = true;
   cronSession.store[agentSessionKey] = cronSession.sessionEntry;
-  await saveSessionStore(cronSession.storePath, cronSession.store);
+  await updateSessionStore(cronSession.storePath, (store) => {
+    store[agentSessionKey] = cronSession.sessionEntry;
+  });
 
   let runResult: Awaited<ReturnType<typeof runEmbeddedPiAgent>>;
   let fallbackProvider = provider;
@@ -234,8 +246,9 @@ export async function runCronIsolatedAgentTurn(params: {
   try {
     const sessionFile = resolveSessionTranscriptPath(cronSession.sessionEntry.sessionId, agentId);
     const resolvedVerboseLevel =
-      (cronSession.sessionEntry.verboseLevel as "on" | "off" | undefined) ??
-      (agentCfg?.verboseDefault as "on" | "off" | undefined);
+      normalizeVerboseLevel(cronSession.sessionEntry.verboseLevel) ??
+      normalizeVerboseLevel(agentCfg?.verboseDefault) ??
+      "off";
     registerAgentRunContext(cronSession.sessionEntry.sessionId, {
       sessionKey: agentSessionKey,
       verboseLevel: resolvedVerboseLevel,
@@ -319,7 +332,9 @@ export async function runCronIsolatedAgentTurn(params: {
         promptTokens > 0 ? promptTokens : (usage.total ?? input);
     }
     cronSession.store[agentSessionKey] = cronSession.sessionEntry;
-    await saveSessionStore(cronSession.storePath, cronSession.store);
+    await updateSessionStore(cronSession.storePath, (store) => {
+      store[agentSessionKey] = cronSession.sessionEntry;
+    });
   }
   const firstText = payloads[0]?.text ?? "";
   const summary = pickSummaryFromPayloads(payloads) ?? pickSummaryFromOutput(firstText);
@@ -355,23 +370,7 @@ export async function runCronIsolatedAgentTurn(params: {
         accountId: resolvedDelivery.accountId,
         payloads,
         bestEffort: bestEffortDeliver,
-        deps: {
-          sendWhatsApp: params.deps.sendMessageWhatsApp,
-          sendTelegram: params.deps.sendMessageTelegram,
-          sendDiscord: params.deps.sendMessageDiscord,
-          sendSlack: params.deps.sendMessageSlack,
-          sendSignal: params.deps.sendMessageSignal,
-          sendIMessage: params.deps.sendMessageIMessage,
-          sendMSTeams: params.deps.sendMessageMSTeams
-            ? async (to, text, opts) =>
-                await params.deps.sendMessageMSTeams({
-                  cfg: params.cfg,
-                  to,
-                  text,
-                  mediaUrl: opts?.mediaUrl,
-                })
-            : undefined,
-        },
+        deps: createOutboundSendDeps(params.deps),
       });
     } catch (err) {
       if (!bestEffortDeliver) {

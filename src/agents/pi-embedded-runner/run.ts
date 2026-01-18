@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { resolveUserPath } from "../../utils.js";
+import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
 import { resolveClawdbotAgentDir } from "../agent-paths.js";
 import {
   markAuthProfileFailure,
@@ -58,6 +59,14 @@ export async function runEmbeddedPiAgent(
   const globalLane = resolveGlobalLane(params.lane);
   const enqueueGlobal =
     params.enqueue ?? ((task, opts) => enqueueCommandInLane(globalLane, task, opts));
+  const channelHint = params.messageChannel ?? params.messageProvider;
+  const resolvedToolResultFormat =
+    params.toolResultFormat ??
+    (channelHint
+      ? isMarkdownCapableMessageChannel(channelHint)
+        ? "markdown"
+        : "plain"
+      : "markdown");
 
   return enqueueCommandInLane(sessionLane, () =>
     enqueueGlobal(async () => {
@@ -107,7 +116,7 @@ export async function runEmbeddedPiAgent(
         );
       }
 
-      const authStore = ensureAuthProfileStore(agentDir);
+      const authStore = ensureAuthProfileStore(agentDir, { allowKeychainPrompt: false });
       const explicitProfileId = params.authProfileId?.trim();
       const profileOrder = resolveAuthProfileOrder({
         cfg: params.config,
@@ -208,11 +217,13 @@ export async function runEmbeddedPiAgent(
             thinkLevel,
             verboseLevel: params.verboseLevel,
             reasoningLevel: params.reasoningLevel,
+            toolResultFormat: resolvedToolResultFormat,
             bashElevated: params.bashElevated,
             timeoutMs: params.timeoutMs,
             runId: params.runId,
             abortSignal: params.abortSignal,
             shouldEmitToolResult: params.shouldEmitToolResult,
+            shouldEmitToolOutput: params.shouldEmitToolOutput,
             onPartialReply: params.onPartialReply,
             onAssistantMessageStart: params.onAssistantMessageStart,
             onBlockReply: params.onBlockReply,
@@ -256,6 +267,29 @@ export async function runEmbeddedPiAgent(
                 },
               };
             }
+            // Handle role ordering errors with a user-friendly message
+            if (/incorrect role information|roles must alternate/i.test(errorText)) {
+              return {
+                payloads: [
+                  {
+                    text:
+                      "Message ordering conflict - please try again. " +
+                      "If this persists, use /new to start a fresh session.",
+                    isError: true,
+                  },
+                ],
+                meta: {
+                  durationMs: Date.now() - started,
+                  agentMeta: {
+                    sessionId: sessionIdUsed,
+                    provider,
+                    model: model.id,
+                  },
+                  systemPromptReport: attempt.systemPromptReport,
+                  error: { kind: "role_ordering", message: errorText },
+                },
+              };
+            }
             const promptFailoverReason = classifyFailoverReason(errorText);
             if (promptFailoverReason && promptFailoverReason !== "timeout" && lastProfileId) {
               await markAuthProfileFailure({
@@ -283,6 +317,19 @@ export async function runEmbeddedPiAgent(
               );
               thinkLevel = fallbackThinking;
               continue;
+            }
+            // FIX: Throw FailoverError for prompt errors when fallbacks configured
+            // This enables model fallback for quota/rate limit errors during prompt submission
+            const promptFallbackConfigured =
+              (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
+            if (promptFallbackConfigured && isFailoverErrorMessage(errorText)) {
+              throw new FailoverError(errorText, {
+                reason: promptFailoverReason ?? "unknown",
+                provider,
+                model: modelId,
+                profileId: lastProfileId,
+                status: resolveFailoverStatus(promptFailoverReason ?? "unknown"),
+              });
             }
             throw promptError;
           }
@@ -339,14 +386,15 @@ export async function runEmbeddedPiAgent(
             if (rotated) continue;
 
             if (fallbackConfigured) {
+              // Prefer formatted error message (user-friendly) over raw errorMessage
               const message =
-                lastAssistant?.errorMessage?.trim() ||
                 (lastAssistant
                   ? formatAssistantErrorText(lastAssistant, {
                       cfg: params.config,
                       sessionKey: params.sessionKey ?? params.sessionId,
                     })
-                  : "") ||
+                  : undefined) ||
+                lastAssistant?.errorMessage?.trim() ||
                 (timedOut
                   ? "LLM request timed out."
                   : rateLimitFailure
@@ -383,6 +431,7 @@ export async function runEmbeddedPiAgent(
             sessionKey: params.sessionKey ?? params.sessionId,
             verboseLevel: params.verboseLevel,
             reasoningLevel: params.reasoningLevel,
+            toolResultFormat: resolvedToolResultFormat,
             inlineToolResultsAllowed: !params.onPartialReply && !params.onToolResult,
           });
 

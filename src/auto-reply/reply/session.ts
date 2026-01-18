@@ -4,13 +4,11 @@ import path from "node:path";
 
 import { CURRENT_SESSION_VERSION, SessionManager } from "@mariozechner/pi-coding-agent";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
-import { getChannelDock } from "../../channels/dock.js";
-import { normalizeChannelId } from "../../channels/plugins/index.js";
 import type { ClawdbotConfig } from "../../config/config.js";
 import {
-  buildGroupDisplayName,
   DEFAULT_IDLE_MINUTES,
   DEFAULT_RESET_TRIGGERS,
+  deriveSessionMetaPatch,
   type GroupKeyResolution,
   loadSessionStore,
   resolveGroupSessionKey,
@@ -20,16 +18,21 @@ import {
   resolveStorePath,
   type SessionEntry,
   type SessionScope,
-  saveSessionStore,
+  updateSessionStore,
 } from "../../config/sessions.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
+import { normalizeChatType } from "../../channels/chat-type.js";
 import { stripMentions, stripStructuralPrefixes } from "./mentions.js";
+import { formatInboundBodyWithSenderMeta } from "./inbound-sender-meta.js";
+import { normalizeInboundTextNewlines } from "./inbound-text.js";
+import { normalizeSessionDeliveryFields } from "../../utils/delivery-context.js";
 
 export type SessionInitResult = {
   sessionCtx: TemplateContext;
   sessionEntry: SessionEntry;
+  previousSessionEntry?: SessionEntry;
   sessionStore: Record<string, SessionEntry>;
   sessionKey: string;
   sessionId: string;
@@ -115,6 +118,7 @@ export async function initSessionState(params: {
   let bodyStripped: string | undefined;
   let systemSent = false;
   let abortedLastRun = false;
+  let resetTriggered = false;
 
   let persistedThinking: string | undefined;
   let persistedVerbose: string | undefined;
@@ -123,10 +127,12 @@ export async function initSessionState(params: {
   let persistedProviderOverride: string | undefined;
 
   const groupResolution = resolveGroupSessionKey(sessionCtxForState) ?? undefined;
-  const isGroup = ctx.ChatType?.trim().toLowerCase() === "group" || Boolean(groupResolution);
+  const normalizedChatType = normalizeChatType(ctx.ChatType);
+  const isGroup =
+    normalizedChatType != null && normalizedChatType !== "direct" ? true : Boolean(groupResolution);
   // Prefer CommandBody/RawBody (clean message) for command detection; fall back
   // to Body which may contain structural context (history, sender labels).
-  const commandSource = ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "";
+  const commandSource = ctx.BodyForCommands ?? ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "";
   const triggerBodyNormalized = stripStructuralPrefixes(commandSource).trim().toLowerCase();
 
   // Use CommandBody/RawBody for reset trigger matching (clean message without structural context).
@@ -149,25 +155,21 @@ export async function initSessionState(params: {
     if (trimmedBody === trigger || strippedForReset === trigger) {
       isNewSession = true;
       bodyStripped = "";
+      resetTriggered = true;
       break;
     }
     const triggerPrefix = `${trigger} `;
     if (trimmedBody.startsWith(triggerPrefix) || strippedForReset.startsWith(triggerPrefix)) {
       isNewSession = true;
       bodyStripped = strippedForReset.slice(trigger.length).trimStart();
+      resetTriggered = true;
       break;
     }
   }
 
   sessionKey = resolveSessionKey(sessionScope, sessionCtxForState, mainKey);
-  if (groupResolution?.legacyKey && groupResolution.legacyKey !== sessionKey) {
-    const legacyEntry = sessionStore[groupResolution.legacyKey];
-    if (legacyEntry && !sessionStore[sessionKey]) {
-      sessionStore[sessionKey] = legacyEntry;
-      delete sessionStore[groupResolution.legacyKey];
-    }
-  }
   const entry = sessionStore[sessionKey];
+  const previousSessionEntry = resetTriggered && entry ? { ...entry } : undefined;
   const idleMs = idleMinutes * 60_000;
   const freshEntry = entry && Date.now() - entry.updatedAt <= idleMs;
 
@@ -188,6 +190,20 @@ export async function initSessionState(params: {
   }
 
   const baseEntry = !isNewSession && freshEntry ? entry : undefined;
+  // Track the originating channel/to for announce routing (subagent announce-back).
+  const lastChannelRaw = (ctx.OriginatingChannel as string | undefined) || baseEntry?.lastChannel;
+  const lastToRaw = (ctx.OriginatingTo as string | undefined) || ctx.To || baseEntry?.lastTo;
+  const lastAccountIdRaw = (ctx.AccountId as string | undefined) || baseEntry?.lastAccountId;
+  const deliveryFields = normalizeSessionDeliveryFields({
+    deliveryContext: {
+      channel: lastChannelRaw,
+      to: lastToRaw,
+      accountId: lastAccountIdRaw,
+    },
+  });
+  const lastChannel = deliveryFields.lastChannel ?? lastChannelRaw;
+  const lastTo = deliveryFields.lastTo ?? lastToRaw;
+  const lastAccountId = deliveryFields.lastAccountId ?? lastAccountIdRaw;
   sessionEntry = {
     ...baseEntry,
     sessionId,
@@ -209,37 +225,26 @@ export async function initSessionState(params: {
     displayName: baseEntry?.displayName,
     chatType: baseEntry?.chatType,
     channel: baseEntry?.channel,
+    groupId: baseEntry?.groupId,
     subject: baseEntry?.subject,
-    room: baseEntry?.room,
+    groupChannel: baseEntry?.groupChannel,
     space: baseEntry?.space,
+    deliveryContext: deliveryFields.deliveryContext,
+    // Track originating channel for subagent announce routing.
+    lastChannel,
+    lastTo,
+    lastAccountId,
   };
-  if (groupResolution?.channel) {
-    const channel = groupResolution.channel;
-    const subject = ctx.GroupSubject?.trim();
-    const space = ctx.GroupSpace?.trim();
-    const explicitRoom = ctx.GroupRoom?.trim();
-    const normalizedChannel = normalizeChannelId(channel);
-    const isRoomProvider = Boolean(
-      normalizedChannel &&
-      getChannelDock(normalizedChannel)?.capabilities.chatTypes.includes("channel"),
-    );
-    const nextRoom =
-      explicitRoom ?? (isRoomProvider && subject && subject.startsWith("#") ? subject : undefined);
-    const nextSubject = nextRoom ? undefined : subject;
-    sessionEntry.chatType = groupResolution.chatType ?? "group";
-    sessionEntry.channel = channel;
-    if (nextSubject) sessionEntry.subject = nextSubject;
-    if (nextRoom) sessionEntry.room = nextRoom;
-    if (space) sessionEntry.space = space;
-    sessionEntry.displayName = buildGroupDisplayName({
-      provider: sessionEntry.channel,
-      subject: sessionEntry.subject,
-      room: sessionEntry.room,
-      space: sessionEntry.space,
-      id: groupResolution.id,
-      key: sessionKey,
-    });
-  } else if (!sessionEntry.chatType) {
+  const metaPatch = deriveSessionMetaPatch({
+    ctx: sessionCtxForState,
+    sessionKey,
+    existing: sessionEntry,
+    groupResolution,
+  });
+  if (metaPatch) {
+    sessionEntry = { ...sessionEntry, ...metaPatch };
+  }
+  if (!sessionEntry.chatType) {
     sessionEntry.chatType = "direct";
   }
   const threadLabel = ctx.ThreadLabel?.trim();
@@ -269,14 +274,34 @@ export async function initSessionState(params: {
       ctx.MessageThreadId,
     );
   }
+  if (isNewSession) {
+    sessionEntry.compactionCount = 0;
+    sessionEntry.memoryFlushCompactionCount = undefined;
+    sessionEntry.memoryFlushAt = undefined;
+  }
+  // Preserve per-session overrides while resetting compaction state on /new.
   sessionStore[sessionKey] = { ...sessionStore[sessionKey], ...sessionEntry };
-  await saveSessionStore(storePath, sessionStore);
+  await updateSessionStore(storePath, (store) => {
+    // Preserve per-session overrides while resetting compaction state on /new.
+    store[sessionKey] = { ...store[sessionKey], ...sessionEntry };
+  });
 
   const sessionCtx: TemplateContext = {
     ...ctx,
     // Keep BodyStripped aligned with Body (best default for agent prompts).
     // RawBody is reserved for command/directive parsing and may omit context.
-    BodyStripped: bodyStripped ?? ctx.Body ?? ctx.CommandBody ?? ctx.RawBody,
+    BodyStripped: formatInboundBodyWithSenderMeta({
+      ctx,
+      body: normalizeInboundTextNewlines(
+        bodyStripped ??
+          ctx.BodyForAgent ??
+          ctx.Body ??
+          ctx.CommandBody ??
+          ctx.RawBody ??
+          ctx.BodyForCommands ??
+          "",
+      ),
+    }),
     SessionId: sessionId,
     IsNewSession: isNewSession ? "true" : "false",
   };
@@ -284,6 +309,7 @@ export async function initSessionState(params: {
   return {
     sessionCtx,
     sessionEntry,
+    previousSessionEntry,
     sessionStore,
     sessionKey,
     sessionId: sessionId ?? crypto.randomUUID(),

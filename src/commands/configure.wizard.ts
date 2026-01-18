@@ -33,7 +33,7 @@ import {
 } from "./configure.shared.js";
 import { healthCommand } from "./health.js";
 import { formatHealthCheckFailure } from "./health-format.js";
-import { setupChannels } from "./onboard-channels.js";
+import { noteChannelStatus, setupChannels } from "./onboard-channels.js";
 import {
   applyWizardMetadata,
   DEFAULT_WORKSPACE,
@@ -258,6 +258,17 @@ export async function runConfigureWizard(
     }
 
     let nextConfig = { ...baseConfig };
+    let didSetGatewayMode = false;
+    if (nextConfig.gateway?.mode !== "local") {
+      nextConfig = {
+        ...nextConfig,
+        gateway: {
+          ...nextConfig.gateway,
+          mode: "local",
+        },
+      };
+      didSetGatewayMode = true;
+    }
     let workspaceDir =
       nextConfig.agents?.defaults?.workspace ??
       baseConfig.agents?.defaults?.workspace ??
@@ -343,11 +354,14 @@ export async function runConfigureWizard(
       }
 
       if (selected.includes("channels")) {
+        await noteChannelStatus({ cfg: nextConfig, prompter });
         const channelMode = await promptChannelMode(runtime);
         if (channelMode === "configure") {
           nextConfig = await setupChannels(nextConfig, runtime, prompter, {
             allowDisable: true,
             allowSignalInstall: true,
+            skipConfirm: true,
+            skipStatusNote: true,
           });
         } else {
           nextConfig = await removeChannelConfigWizard(nextConfig, runtime);
@@ -484,11 +498,14 @@ export async function runConfigureWizard(
         }
 
         if (choice === "channels") {
+          await noteChannelStatus({ cfg: nextConfig, prompter });
           const channelMode = await promptChannelMode(runtime);
           if (channelMode === "configure") {
             nextConfig = await setupChannels(nextConfig, runtime, prompter, {
               allowDisable: true,
               allowSignalInstall: true,
+              skipConfirm: true,
+              skipStatusNote: true,
             });
           } else {
             nextConfig = await removeChannelConfigWizard(nextConfig, runtime);
@@ -557,6 +574,11 @@ export async function runConfigureWizard(
       }
 
       if (!ranSection) {
+        if (didSetGatewayMode) {
+          await persistConfig();
+          outro("Gateway mode set to local.");
+          return;
+        }
         outro("No changes selected.");
         return;
       }

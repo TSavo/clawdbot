@@ -7,12 +7,14 @@ import { createSubsystemLogger } from "../logging.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveSessionAgentIds } from "./agent-scope.js";
+import { applyBootstrapHookOverrides } from "./bootstrap-hooks.js";
 import { resolveCliBackendConfig } from "./cli-backends.js";
 import {
   appendImagePathsToPrompt,
   buildCliArgs,
   buildSystemPrompt,
   cleanupResumeProcesses,
+  cleanupSuspendedCliProcesses,
   enqueueCliRun,
   normalizeCliModel,
   parseCliJson,
@@ -75,8 +77,15 @@ export async function runCliAgent(params: {
     await loadWorkspaceBootstrapFiles(workspaceDir),
     params.sessionKey ?? params.sessionId,
   );
+  const hookAdjustedBootstrapFiles = await applyBootstrapHookOverrides({
+    files: bootstrapFiles,
+    workspaceDir,
+    config: params.config,
+    sessionKey: params.sessionKey,
+    sessionId: params.sessionId,
+  });
   const sessionLabel = params.sessionKey ?? params.sessionId;
-  const contextFiles = buildBootstrapContextFiles(bootstrapFiles, {
+  const contextFiles = buildBootstrapContextFiles(hookAdjustedBootstrapFiles, {
     maxChars: resolveBootstrapMaxChars(params.config),
     warn: (message) => log.warn(`${message} (sessionKey=${sessionLabel})`),
   });
@@ -206,6 +215,8 @@ export async function runCliAgent(params: {
         return next;
       })();
 
+      // Cleanup suspended processes that have accumulated (regardless of sessionId)
+      await cleanupSuspendedCliProcesses(backend);
       if (useResume && cliSessionIdToSend) {
         await cleanupResumeProcesses(backend, cliSessionIdToSend);
       }

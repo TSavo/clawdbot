@@ -9,12 +9,15 @@ import { createAgentSession, SessionManager, SettingsManager } from "@mariozechn
 import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
 import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
+import { resolveTelegramInlineButtonsScope } from "../../../telegram/inline-buttons.js";
 import { resolveTelegramReactionLevel } from "../../../telegram/reaction-level.js";
 import { normalizeMessageChannel } from "../../../utils/message-channel.js";
 import { isReasoningTagProvider } from "../../../utils/provider-utils.js";
+import { isSubagentSessionKey } from "../../../routing/session-key.js";
 import { resolveUserPath } from "../../../utils.js";
 import { resolveClawdbotAgentDir } from "../../agent-paths.js";
 import { resolveSessionAgentIds } from "../../agent-scope.js";
+import { applyBootstrapHookOverrides } from "../../bootstrap-hooks.js";
 import { resolveModelAuthMode } from "../../model-auth.js";
 import {
   buildBootstrapContextFiles,
@@ -44,7 +47,11 @@ import { filterBootstrapFilesForSession, loadWorkspaceBootstrapFiles } from "../
 import { isAbortError } from "../abort.js";
 import { buildEmbeddedExtensionPaths } from "../extensions.js";
 import { applyExtraParamsToAgent } from "../extra-params.js";
-import { logToolSchemasForGoogle, sanitizeSessionHistory } from "../google.js";
+import {
+  logToolSchemasForGoogle,
+  sanitizeSessionHistory,
+  sanitizeToolsForGoogle,
+} from "../google.js";
 import { getDmHistoryLimitFromSessionKey, limitHistoryTurns } from "../history.js";
 import { log } from "../logger.js";
 import { buildModelAliasLines } from "../model.js";
@@ -58,12 +65,8 @@ import { prewarmSessionFile, trackSessionManagerAccess } from "../session-manage
 import { prepareSessionManagerForRun } from "../session-manager-init.js";
 import { buildEmbeddedSystemPrompt, createSystemPromptOverride } from "../system-prompt.js";
 import { splitSdkTools } from "../tool-split.js";
-import {
-  formatUserTime,
-  mapThinkingLevel,
-  resolveExecToolDefaults,
-  resolveUserTimezone,
-} from "../utils.js";
+import { formatUserTime, resolveUserTimeFormat, resolveUserTimezone } from "../../date-time.js";
+import { mapThinkingLevel, resolveExecToolDefaults } from "../utils.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
@@ -122,15 +125,22 @@ export async function runEmbeddedAttempt(
       await loadWorkspaceBootstrapFiles(effectiveWorkspace),
       params.sessionKey ?? params.sessionId,
     );
+    const hookAdjustedBootstrapFiles = await applyBootstrapHookOverrides({
+      files: bootstrapFiles,
+      workspaceDir: effectiveWorkspace,
+      config: params.config,
+      sessionKey: params.sessionKey,
+      sessionId: params.sessionId,
+    });
     const sessionLabel = params.sessionKey ?? params.sessionId;
-    const contextFiles = buildBootstrapContextFiles(bootstrapFiles, {
+    const contextFiles = buildBootstrapContextFiles(hookAdjustedBootstrapFiles, {
       maxChars: resolveBootstrapMaxChars(params.config),
       warn: (message) => log.warn(`${message} (sessionKey=${sessionLabel})`),
     });
 
     const agentDir = params.agentDir ?? resolveClawdbotAgentDir();
 
-    const tools = createClawdbotCodingTools({
+    const toolsRaw = createClawdbotCodingTools({
       exec: {
         ...resolveExecToolDefaults(params.config),
         elevated: params.bashElevated,
@@ -151,17 +161,32 @@ export async function runEmbeddedAttempt(
       replyToMode: params.replyToMode,
       hasRepliedRef: params.hasRepliedRef,
     });
+    const tools = sanitizeToolsForGoogle({ tools: toolsRaw, provider: params.provider });
     logToolSchemasForGoogle({ tools, provider: params.provider });
 
     const machineName = await getMachineDisplayName();
     const runtimeChannel = normalizeMessageChannel(params.messageChannel ?? params.messageProvider);
-    const runtimeCapabilities = runtimeChannel
+    let runtimeCapabilities = runtimeChannel
       ? (resolveChannelCapabilities({
           cfg: params.config,
           channel: runtimeChannel,
           accountId: params.agentAccountId,
         }) ?? [])
       : undefined;
+    if (runtimeChannel === "telegram" && params.config) {
+      const inlineButtonsScope = resolveTelegramInlineButtonsScope({
+        cfg: params.config,
+        accountId: params.agentAccountId ?? undefined,
+      });
+      if (inlineButtonsScope !== "off") {
+        if (!runtimeCapabilities) runtimeCapabilities = [];
+        if (
+          !runtimeCapabilities.some((cap) => String(cap).trim().toLowerCase() === "inlinebuttons")
+        ) {
+          runtimeCapabilities.push("inlineButtons");
+        }
+      }
+    }
     const reactionGuidance =
       runtimeChannel === "telegram" && params.config
         ? (() => {
@@ -186,12 +211,14 @@ export async function runEmbeddedAttempt(
     const sandboxInfo = buildEmbeddedSandboxInfo(sandbox, params.bashElevated);
     const reasoningTagHint = isReasoningTagProvider(params.provider);
     const userTimezone = resolveUserTimezone(params.config?.agents?.defaults?.userTimezone);
-    const userTime = formatUserTime(new Date(), userTimezone);
+    const userTimeFormat = resolveUserTimeFormat(params.config?.agents?.defaults?.timeFormat);
+    const userTime = formatUserTime(new Date(), userTimezone, userTimeFormat);
     const { defaultAgentId, sessionAgentId } = resolveSessionAgentIds({
       sessionKey: params.sessionKey,
       config: params.config,
     });
     const isDefaultAgent = sessionAgentId === defaultAgentId;
+    const promptMode = isSubagentSessionKey(params.sessionKey) ? "minimal" : "full";
 
     const appendPrompt = buildEmbeddedSystemPrompt({
       workspaceDir: effectiveWorkspace,
@@ -205,12 +232,14 @@ export async function runEmbeddedAttempt(
         : undefined,
       skillsPrompt,
       reactionGuidance,
+      promptMode,
       runtimeInfo,
       sandboxInfo,
       tools,
       modelAliasLines: buildModelAliasLines(params.config),
       userTimezone,
       userTime,
+      userTimeFormat,
       contextFiles,
     });
     const systemPromptReport = buildSystemPromptReport({
@@ -230,7 +259,7 @@ export async function runEmbeddedAttempt(
         return { mode: runtime.mode, sandboxed: runtime.sandboxed };
       })(),
       systemPrompt: appendPrompt,
-      bootstrapFiles,
+      bootstrapFiles: hookAdjustedBootstrapFiles,
       injectedFiles: contextFiles,
       skillsPrompt,
       tools,
@@ -304,19 +333,14 @@ export async function runEmbeddedAttempt(
       // Force a stable streamFn reference so vitest can reliably mock @mariozechner/pi-ai.
       activeSession.agent.streamFn = streamSimple;
 
-      applyExtraParamsToAgent(
-        activeSession.agent,
-        params.config,
-        params.provider,
-        params.modelId,
-        params.thinkLevel,
-      );
+      applyExtraParamsToAgent(activeSession.agent, params.config, params.provider, params.modelId);
 
       try {
         const prior = await sanitizeSessionHistory({
           messages: activeSession.messages,
           modelApi: params.model.api,
           modelId: params.modelId,
+          provider: params.provider,
           sessionManager,
           sessionId: params.sessionId,
         });
@@ -343,13 +367,42 @@ export async function runEmbeddedAttempt(
         runAbortController.abort();
         void activeSession.abort();
       };
+      const abortable = <T>(promise: Promise<T>): Promise<T> => {
+        const signal = runAbortController.signal;
+        if (signal.aborted) {
+          const err = new Error("aborted");
+          (err as { name?: string }).name = "AbortError";
+          return Promise.reject(err);
+        }
+        return new Promise<T>((resolve, reject) => {
+          const onAbort = () => {
+            const err = new Error("aborted");
+            (err as { name?: string }).name = "AbortError";
+            signal.removeEventListener("abort", onAbort);
+            reject(err);
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          promise.then(
+            (value) => {
+              signal.removeEventListener("abort", onAbort);
+              resolve(value);
+            },
+            (err) => {
+              signal.removeEventListener("abort", onAbort);
+              reject(err);
+            },
+          );
+        });
+      };
 
       const subscription = subscribeEmbeddedPiSession({
         session: activeSession,
         runId: params.runId,
         verboseLevel: params.verboseLevel,
         reasoningMode: params.reasoningLevel ?? "off",
+        toolResultFormat: params.toolResultFormat,
         shouldEmitToolResult: params.shouldEmitToolResult,
+        shouldEmitToolOutput: params.shouldEmitToolOutput,
         onToolResult: params.onToolResult,
         onReasoningStream: params.onReasoningStream,
         onBlockReply: params.onBlockReply,
@@ -418,8 +471,25 @@ export async function runEmbeddedAttempt(
       try {
         const promptStartedAt = Date.now();
         log.debug(`embedded run prompt start: runId=${params.runId} sessionId=${params.sessionId}`);
+
+        // Repair orphaned trailing user messages so new prompts don't violate role ordering.
+        const leafEntry = sessionManager.getLeafEntry();
+        if (leafEntry?.type === "message" && leafEntry.message.role === "user") {
+          if (leafEntry.parentId) {
+            sessionManager.branch(leafEntry.parentId);
+          } else {
+            sessionManager.resetLeaf();
+          }
+          const sessionContext = sessionManager.buildSessionContext();
+          activeSession.agent.replaceMessages(sessionContext.messages);
+          log.warn(
+            `Removed orphaned user message to prevent consecutive user turns. ` +
+              `runId=${params.runId} sessionId=${params.sessionId}`,
+          );
+        }
+
         try {
-          await activeSession.prompt(params.prompt, { images: params.images });
+          await abortable(activeSession.prompt(params.prompt, { images: params.images }));
         } catch (err) {
           promptError = err;
         } finally {

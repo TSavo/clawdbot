@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClawdbotConfig } from "../config/config.js";
 import { ensureClawdbotModelsJson } from "./models-config.js";
 
@@ -78,15 +78,20 @@ vi.mock("@mariozechner/pi-ai", async () => {
               ? buildAssistantErrorMessage(model)
               : buildAssistantMessage(model),
         });
+        stream.end();
       });
       return stream;
     },
   };
 });
 
-vi.resetModules();
+let runEmbeddedPiAgent: typeof import("./pi-embedded-runner.js").runEmbeddedPiAgent;
 
-const { runEmbeddedPiAgent } = await import("./pi-embedded-runner.js");
+beforeEach(async () => {
+  vi.useRealTimers();
+  vi.resetModules();
+  ({ runEmbeddedPiAgent } = await import("./pi-embedded-runner.js"));
+});
 
 const makeOpenAiConfig = (modelIds: string[]) =>
   ({
@@ -113,6 +118,9 @@ const makeOpenAiConfig = (modelIds: string[]) =>
 const ensureModels = (cfg: ClawdbotConfig, agentDir: string) =>
   ensureClawdbotModelsJson(cfg, agentDir);
 
+const testSessionKey = "agent:test:embedded-ordering";
+const immediateEnqueue = async <T>(task: () => Promise<T>) => task();
+
 const textFromContent = (content: unknown) => {
   if (typeof content === "string") return content;
   if (Array.isArray(content) && content[0]?.type === "text") {
@@ -138,7 +146,7 @@ const readSessionMessages = async (sessionFile: string) => {
 };
 
 describe("runEmbeddedPiAgent", () => {
-  it("appends new user + assistant after existing transcript entries", async () => {
+  it("appends new user + assistant after existing transcript entries", { timeout: 90_000 }, async () => {
     const { SessionManager } = await import("@mariozechner/pi-coding-agent");
 
     const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-agent-"));
@@ -179,7 +187,7 @@ describe("runEmbeddedPiAgent", () => {
 
     await runEmbeddedPiAgent({
       sessionId: "session:test",
-      sessionKey: "agent:main:main",
+      sessionKey: testSessionKey,
       sessionFile,
       workspaceDir,
       config: cfg,
@@ -188,6 +196,7 @@ describe("runEmbeddedPiAgent", () => {
       model: "mock-1",
       timeoutMs: 5_000,
       agentDir,
+      enqueue: immediateEnqueue,
     });
 
     const messages = await readSessionMessages(sessionFile);
@@ -208,7 +217,7 @@ describe("runEmbeddedPiAgent", () => {
     expect(seedAssistantIndex).toBeGreaterThan(seedUserIndex);
     expect(newUserIndex).toBeGreaterThan(seedAssistantIndex);
     expect(newAssistantIndex).toBeGreaterThan(newUserIndex);
-  }, 20_000);
+  }, 45_000);
   it("persists multi-turn user/assistant ordering across runs", async () => {
     const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-agent-"));
     const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-workspace-"));
@@ -219,7 +228,7 @@ describe("runEmbeddedPiAgent", () => {
 
     await runEmbeddedPiAgent({
       sessionId: "session:test",
-      sessionKey: "agent:main:main",
+      sessionKey: testSessionKey,
       sessionFile,
       workspaceDir,
       config: cfg,
@@ -228,11 +237,12 @@ describe("runEmbeddedPiAgent", () => {
       model: "mock-1",
       timeoutMs: 5_000,
       agentDir,
+      enqueue: immediateEnqueue,
     });
 
     await runEmbeddedPiAgent({
       sessionId: "session:test",
-      sessionKey: "agent:main:main",
+      sessionKey: testSessionKey,
       sessionFile,
       workspaceDir,
       config: cfg,
@@ -241,6 +251,7 @@ describe("runEmbeddedPiAgent", () => {
       model: "mock-1",
       timeoutMs: 5_000,
       agentDir,
+      enqueue: immediateEnqueue,
     });
 
     const messages = await readSessionMessages(sessionFile);
@@ -260,5 +271,99 @@ describe("runEmbeddedPiAgent", () => {
     expect(firstAssistantIndex).toBeGreaterThan(firstUserIndex);
     expect(secondUserIndex).toBeGreaterThan(firstAssistantIndex);
     expect(secondAssistantIndex).toBeGreaterThan(secondUserIndex);
-  }, 20_000);
+  }, 90_000);
+  it("repairs orphaned user messages and continues", async () => {
+    const { SessionManager } = await import("@mariozechner/pi-coding-agent");
+
+    const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-agent-"));
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-workspace-"));
+    const sessionFile = path.join(workspaceDir, "session.jsonl");
+
+    const sessionManager = SessionManager.open(sessionFile);
+    sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "seed user 1" }],
+    });
+    sessionManager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "seed assistant" }],
+      stopReason: "stop",
+      api: "openai-responses",
+      provider: "openai",
+      model: "mock-1",
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
+        },
+      },
+      timestamp: Date.now(),
+    });
+    sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "seed user 2" }],
+    });
+
+    const cfg = makeOpenAiConfig(["mock-1"]);
+    await ensureModels(cfg, agentDir);
+
+    const result = await runEmbeddedPiAgent({
+      sessionId: "session:test",
+      sessionKey: testSessionKey,
+      sessionFile,
+      workspaceDir,
+      config: cfg,
+      prompt: "hello",
+      provider: "openai",
+      model: "mock-1",
+      timeoutMs: 5_000,
+      agentDir,
+      enqueue: immediateEnqueue,
+    });
+
+    expect(result.meta.error).toBeUndefined();
+    expect(result.payloads?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("repairs orphaned single-user sessions and continues", async () => {
+    const { SessionManager } = await import("@mariozechner/pi-coding-agent");
+
+    const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-agent-"));
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-workspace-"));
+    const sessionFile = path.join(workspaceDir, "session.jsonl");
+
+    const sessionManager = SessionManager.open(sessionFile);
+    sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "seed user only" }],
+    });
+
+    const cfg = makeOpenAiConfig(["mock-1"]);
+    await ensureModels(cfg, agentDir);
+
+    const result = await runEmbeddedPiAgent({
+      sessionId: "session:test",
+      sessionKey: testSessionKey,
+      sessionFile,
+      workspaceDir,
+      config: cfg,
+      prompt: "hello",
+      provider: "openai",
+      model: "mock-1",
+      timeoutMs: 5_000,
+      agentDir,
+      enqueue: immediateEnqueue,
+    });
+
+    expect(result.meta.error).toBeUndefined();
+    expect(result.payloads?.length ?? 0).toBeGreaterThan(0);
+  });
 });

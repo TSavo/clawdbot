@@ -113,19 +113,15 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
       replyToId: replyToId ?? null,
       threadId: threadId ?? null,
       abortSignal,
+      mirror: params.sessionKey
+        ? {
+            sessionKey: params.sessionKey,
+            agentId: resolveSessionAgentId({ sessionKey: params.sessionKey, config: cfg }),
+            text,
+            mediaUrls,
+          }
+        : undefined,
     });
-
-    // Optional: mirror delivered text back into the session transcript so the agent "remembers" it.
-    if (cfg.messages?.deliveryMirror?.enabled && params.sessionKey) {
-      const { appendAssistantMessageToSessionTranscript } =
-        await import("../../config/sessions.js");
-      const agentId = resolveSessionAgentId({ sessionKey: params.sessionKey, config: cfg });
-      await appendAssistantMessageToSessionTranscript({
-        agentId,
-        sessionKey: params.sessionKey,
-        text,
-      });
-    }
 
     const last = results.at(-1);
     return { ok: true, messageId: last?.messageId };

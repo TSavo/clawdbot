@@ -5,14 +5,17 @@ import {
 import { createClawdbotCodingTools } from "../../agents/pi-tools.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
 import { buildWorkspaceSkillSnapshot } from "../../agents/skills.js";
+import { getSkillsSnapshotVersion } from "../../agents/skills/refresh.js";
 import { buildAgentSystemPrompt } from "../../agents/system-prompt.js";
 import { buildSystemPromptReport } from "../../agents/system-prompt-report.js";
 import { buildToolSummaryMap } from "../../agents/tool-summaries.js";
+import { applyBootstrapHookOverrides } from "../../agents/bootstrap-hooks.js";
 import {
   filterBootstrapFilesForSession,
   loadWorkspaceBootstrapFiles,
 } from "../../agents/workspace.js";
 import type { SessionSystemPromptReport } from "../../config/sessions/types.js";
+import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
 import type { ReplyPayload } from "../types.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
@@ -57,12 +60,23 @@ async function resolveContextReport(
     await loadWorkspaceBootstrapFiles(workspaceDir),
     params.sessionKey,
   );
-  const injectedFiles = buildBootstrapContextFiles(bootstrapFiles, {
+  const hookAdjustedBootstrapFiles = await applyBootstrapHookOverrides({
+    files: bootstrapFiles,
+    workspaceDir,
+    config: params.cfg,
+    sessionKey: params.sessionKey,
+    sessionId: params.sessionEntry?.sessionId,
+  });
+  const injectedFiles = buildBootstrapContextFiles(hookAdjustedBootstrapFiles, {
     maxChars: bootstrapMaxChars,
   });
   const skillsSnapshot = (() => {
     try {
-      return buildWorkspaceSkillSnapshot(workspaceDir, { config: params.cfg });
+      return buildWorkspaceSkillSnapshot(workspaceDir, {
+        config: params.cfg,
+        eligibility: { remote: getRemoteSkillEligibility() },
+        snapshotVersion: getSkillsSnapshotVersion(workspaceDir),
+      });
     } catch {
       return { prompt: "", skills: [], resolvedSkills: [] };
     }
@@ -137,7 +151,7 @@ async function resolveContextReport(
     bootstrapMaxChars,
     sandbox: { mode: sandboxRuntime.mode, sandboxed: sandboxRuntime.sandboxed },
     systemPrompt,
-    bootstrapFiles,
+    bootstrapFiles: hookAdjustedBootstrapFiles,
     injectedFiles,
     skillsPrompt,
     tools,
