@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   connectOk,
   installGatewayTestHooks,
@@ -12,7 +12,6 @@ installGatewayTestHooks();
 
 describe("gateway server channels", () => {
   let testServer: Awaited<ReturnType<typeof startServerWithClient>> | null = null;
-  let testTokenBackup: string | undefined = undefined;
 
   afterEach(async () => {
     if (testServer) {
@@ -29,14 +28,10 @@ describe("gateway server channels", () => {
       await testServer.server.close();
       testServer = null;
     }
-    if (testTokenBackup !== undefined) {
-      process.env.TELEGRAM_BOT_TOKEN = testTokenBackup;
-    }
   });
 
   test("channels.status returns snapshot without probe", async () => {
-    testTokenBackup = process.env.TELEGRAM_BOT_TOKEN;
-    delete process.env.TELEGRAM_BOT_TOKEN;
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", undefined);
     testServer = await startServerWithClient();
     await connectOk(testServer.ws);
 
