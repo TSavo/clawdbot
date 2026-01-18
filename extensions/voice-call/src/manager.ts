@@ -894,10 +894,13 @@ export class CallManager {
   private persistCallRecord(call: CallRecord): void {
     const logPath = path.join(this.storePath, "calls.jsonl");
     const line = `${JSON.stringify(call)}\n`;
-    // Fire-and-forget async write to avoid blocking event loop
-    fsp.appendFile(logPath, line).catch((err) => {
+    // Use synchronous write to guarantee data is flushed to disk
+    // before loadActiveCalls() does synchronous read during manager restart
+    try {
+      fs.appendFileSync(logPath, line);
+    } catch (err) {
       console.error("[voice-call] Failed to persist call record:", err);
-    });
+    }
   }
 
   /**

@@ -1,47 +1,19 @@
-version: '3.8'
-
 services:
   clawdbot-gateway:
     image: ${CLAWDBOT_IMAGE:-clawdbot:local}
     environment:
       HOME: /home/node
       TERM: xterm-256color
-      # Gateway configuration
       CLAWDBOT_GATEWAY_TOKEN: ${CLAWDBOT_GATEWAY_TOKEN}
-      CLAWDBOT_GATEWAY_BIND: ${CLAWDBOT_GATEWAY_BIND:-lan}
-      # Claude web session
       CLAUDE_AI_SESSION_KEY: ${CLAUDE_AI_SESSION_KEY}
       CLAUDE_WEB_SESSION_KEY: ${CLAUDE_WEB_SESSION_KEY}
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE}
-      # Voice provider configuration (system mode - Whisper + Kokoro)
-      VOICE_STT_PROVIDER: ${VOICE_STT_PROVIDER:-whisper-local}
-      VOICE_TTS_PROVIDER: ${VOICE_TTS_PROVIDER:-kokoro}
-      WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-base}
-      WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-auto}
-      # TTS settings (Kokoro voice selection: af, am, bf, bm)
-      KOKORO_VOICE: ${KOKORO_VOICE:-af}
-      # Cache directories for models
-      HF_HOME: /app/.cache/whisper
-      TRANSFORMERS_CACHE: /app/.cache/whisper
     volumes:
-      # Application configuration
       - ${CLAWDBOT_CONFIG_DIR}:/home/node/.clawdbot
       - ${CLAWDBOT_WORKSPACE_DIR}:/home/node/clawd
-      # Voice model cache volumes (persists across restarts)
-      - whisper-cache:/app/.cache/whisper
-      - kokoro-models:/app/models/tts-kokoro
     ports:
-      # Main gateway ports
       - "${CLAWDBOT_GATEWAY_PORT:-18789}:18789"
       - "${CLAWDBOT_BRIDGE_PORT:-18790}:18790"
-      # Optional: Voice API endpoints (for direct STT/TTS access)
-      - "${VOICE_API_PORT:-18791}:18791"
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:18789/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
     init: true
     restart: unless-stopped
     command:
@@ -64,24 +36,10 @@ services:
       CLAUDE_AI_SESSION_KEY: ${CLAUDE_AI_SESSION_KEY}
       CLAUDE_WEB_SESSION_KEY: ${CLAUDE_WEB_SESSION_KEY}
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE}
-      # Voice provider configuration
-      VOICE_STT_PROVIDER: ${VOICE_STT_PROVIDER:-whisper-local}
-      VOICE_TTS_PROVIDER: ${VOICE_TTS_PROVIDER:-kokoro}
-      WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-base}
-      HF_HOME: /app/.cache/whisper
     volumes:
       - ${CLAWDBOT_CONFIG_DIR}:/home/node/.clawdbot
       - ${CLAWDBOT_WORKSPACE_DIR}:/home/node/clawd
-      - whisper-cache:/app/.cache/whisper
-      - kokoro-models:/app/models/tts-kokoro
     stdin_open: true
     tty: true
     init: true
     entrypoint: ["node", "dist/index.js"]
-
-# Named volumes for persistent model caches
-volumes:
-  whisper-cache:
-    driver: local
-  kokoro-models:
-    driver: local

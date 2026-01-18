@@ -136,8 +136,8 @@ describe("Critical Untested Paths", () => {
         timestamp: Date.now(),
       });
 
-      // Wait for persistence
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // Wait for persistence (sync write is now used so timing less critical, but keep small delay for cleanup)
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
       // Second manager: should recover processedEventIds
       const manager2 = new CallManager(config, tempDir);
