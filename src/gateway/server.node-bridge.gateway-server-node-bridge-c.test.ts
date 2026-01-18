@@ -64,29 +64,31 @@ describe("gateway server node/bridge", () => {
     const bridgeCall = bridgeStartCalls.at(-1);
     expect(bridgeCall?.onEvent).toBeDefined();
 
-    const spy = vi.mocked(agentCommand);
-    const beforeCalls = spy.mock.calls.length;
+    try {
+      const spy = vi.mocked(agentCommand);
+      const beforeCalls = spy.mock.calls.length;
 
-    await bridgeCall?.onEvent?.("ios-node", {
-      event: "voice.transcript",
-      payloadJSON: JSON.stringify({ text: "hello" }),
-    });
+      await bridgeCall?.onEvent?.("ios-node", {
+        event: "voice.transcript",
+        payloadJSON: JSON.stringify({ text: "hello" }),
+      });
 
-    expect(spy.mock.calls.length).toBe(beforeCalls + 1);
-    const call = spy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
-    expect(call.sessionId).toBe("sess-main");
-    expect(call.sessionKey).toBe("main");
-    expect(call.deliver).toBe(false);
-    expect(call.messageChannel).toBe("node");
+      expect(spy.mock.calls.length).toBe(beforeCalls + 1);
+      const call = spy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      expect(call.sessionId).toBe("sess-main");
+      expect(call.sessionKey).toBe("main");
+      expect(call.deliver).toBe(false);
+      expect(call.messageChannel).toBe("node");
 
-    const stored = JSON.parse(await fs.readFile(testState.sessionStorePath, "utf-8")) as Record<
-      string,
-      { sessionId?: string } | undefined
-    >;
-    expect(stored.main?.sessionId).toBe("sess-main");
-    expect(stored["node-ios-node"]).toBeUndefined();
-
-    await server.close();
+      const stored = JSON.parse(await fs.readFile(testState.sessionStorePath, "utf-8")) as Record<
+        string,
+        { sessionId?: string } | undefined
+      >;
+      expect(stored.main?.sessionId).toBe("sess-main");
+      expect(stored["node-ios-node"]).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => void server.close(() => resolve()));
+    }
   });
 
   test("bridge voice transcript triggers chat events for webchat clients", async () => {
@@ -164,20 +166,22 @@ describe("gateway server node/bridge", () => {
       data: { phase: "end" },
     });
 
-    const evt = await finalChatP;
-    const payload =
-      evt.payload && typeof evt.payload === "object"
-        ? (evt.payload as Record<string, unknown>)
-        : {};
-    expect(payload.sessionKey).toBe("main");
-    const message =
-      payload.message && typeof payload.message === "object"
-        ? (payload.message as Record<string, unknown>)
-        : {};
-    expect(message.role).toBe("assistant");
-
-    ws.close();
-    await server.close();
+    try {
+      const evt = await finalChatP;
+      const payload =
+        evt.payload && typeof evt.payload === "object"
+          ? (evt.payload as Record<string, unknown>)
+          : {};
+      expect(payload.sessionKey).toBe("main");
+      const message =
+        payload.message && typeof payload.message === "object"
+          ? (payload.message as Record<string, unknown>)
+          : {};
+      expect(message.role).toBe("assistant");
+    } finally {
+      ws.close();
+      await new Promise<void>((resolve) => void server.close(() => resolve()));
+    }
   });
 
   test("bridge chat.abort cancels while saving the session store", async () => {
@@ -215,31 +219,33 @@ describe("gateway server node/bridge", () => {
       });
     });
 
-    const sendP = bridgeCall?.onRequest?.("ios-node", {
-      id: "send-abort-save-bridge-1",
-      method: "chat.send",
-      paramsJSON: JSON.stringify({
-        sessionKey: "main",
-        message: "hello",
-        idempotencyKey: "idem-abort-save-bridge-1",
-        timeoutMs: 30_000,
-      }),
-    });
+    try {
+      const sendP = bridgeCall?.onRequest?.("ios-node", {
+        id: "send-abort-save-bridge-1",
+        method: "chat.send",
+        paramsJSON: JSON.stringify({
+          sessionKey: "main",
+          message: "hello",
+          idempotencyKey: "idem-abort-save-bridge-1",
+          timeoutMs: 30_000,
+        }),
+      });
 
-    const abortRes = await bridgeCall?.onRequest?.("ios-node", {
-      id: "abort-save-bridge-1",
-      method: "chat.abort",
-      paramsJSON: JSON.stringify({
-        sessionKey: "main",
-        runId: "idem-abort-save-bridge-1",
-      }),
-    });
+      const abortRes = await bridgeCall?.onRequest?.("ios-node", {
+        id: "abort-save-bridge-1",
+        method: "chat.abort",
+        paramsJSON: JSON.stringify({
+          sessionKey: "main",
+          runId: "idem-abort-save-bridge-1",
+        }),
+      });
 
-    expect(abortRes?.ok).toBe(true);
+      expect(abortRes?.ok).toBe(true);
 
-    const sendRes = await sendP;
-    expect(sendRes?.ok).toBe(true);
-
-    await server.close();
+      const sendRes = await sendP;
+      expect(sendRes?.ok).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => void server.close(() => resolve()));
+    }
   });
 });
