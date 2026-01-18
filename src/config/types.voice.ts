@@ -102,6 +102,66 @@ export type VoiceProvidersConfig = {
   };
 };
 
+/**
+ * Discord voice call configuration
+ */
+export type DiscordCallConfig = {
+  guildId: string;
+  voiceChannelId?: string;
+  participantLimit?: number;
+  enabled: boolean;
+};
+
+/**
+ * Telegram group call configuration
+ */
+export type TelegramCallConfig = {
+  botToken: string;
+  groupId: string;
+  recordingEnabled?: boolean;
+  maxParticipants?: number;
+  enabled: boolean;
+};
+
+/**
+ * Signal call configuration with E2E encryption
+ */
+export type SignalCallConfig = {
+  phoneNumber: string;
+  signalCliPath?: string;
+  zrtpVerificationEnabled?: boolean;
+  groupCallsEnabled: boolean;
+  oneToOneCallsEnabled: boolean;
+  enabled: boolean;
+};
+
+/**
+ * Twilio WhatsApp/SMS call configuration
+ */
+export type TwilioCallConfig = {
+  accountSid: string;
+  authToken: string;
+  twilioPhoneNumber: string;
+  whatsappCallsEnabled: boolean;
+  whatsappMessagingEnabled: boolean;
+  defaultTimeoutSeconds?: number;
+  enabled: boolean;
+};
+
+/**
+ * All voice calls providers configuration
+ */
+export type VoiceCallsConfig = {
+  enabled: boolean;
+  providers: {
+    discord?: DiscordCallConfig;
+    telegram?: TelegramCallConfig;
+    signal?: SignalCallConfig;
+    twilio?: TwilioCallConfig;
+  };
+};
+
 export type VoiceConfig = {
   providers?: VoiceProvidersConfig;
+  calls?: VoiceCallsConfig;
 };
