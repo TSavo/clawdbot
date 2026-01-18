@@ -221,6 +221,7 @@ describe("runEmbeddedPiAgent", () => {
       expect(newUserIndex).toBeGreaterThan(seedAssistantIndex);
       expect(newAssistantIndex).toBeGreaterThan(newUserIndex);
     },
+    45_000,
   );
   it("persists multi-turn user/assistant ordering across runs", async () => {
     const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-agent-"));

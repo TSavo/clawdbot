@@ -1,6 +1,5 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { logVerbose, shouldLogVerbose } from "../globals.js";
 import { type MediaKind, maxBytesForKind, mediaKindFromMime } from "../media/constants.js";
@@ -25,13 +24,8 @@ async function loadWebMediaInternal(
   options: WebMediaOptions = {},
 ): Promise<WebMediaResult> {
   const { maxBytes, optimizeImages = true } = options;
-  // Use fileURLToPath for proper handling of file:// URLs (handles file://localhost/path, etc.)
   if (mediaUrl.startsWith("file://")) {
-    try {
-      mediaUrl = fileURLToPath(mediaUrl);
-    } catch {
-      throw new Error(`Invalid file:// URL: ${mediaUrl}`);
-    }
+    mediaUrl = mediaUrl.replace("file://", "");
   }
 
   const optimizeAndClampImage = async (buffer: Buffer, cap: number) => {
@@ -63,7 +57,7 @@ async function loadWebMediaInternal(
     kind: MediaKind;
     fileName?: string;
   }): Promise<WebMediaResult> => {
-    const cap = maxBytes !== undefined ? Math.min(maxBytes, maxBytesForKind(params.kind)) : maxBytesForKind(params.kind);
+    const cap = Math.min(maxBytes ?? maxBytesForKind(params.kind), maxBytesForKind(params.kind));
     if (params.kind === "image") {
       const isGif = params.contentType === "image/gif";
       if (isGif || !optimizeImages) {
@@ -165,27 +159,23 @@ export async function optimizeImageToJpeg(
 
   for (const side of sides) {
     for (const quality of qualities) {
-      try {
-        const out = await resizeToJpeg({
-          buffer,
-          maxSide: side,
+      const out = await resizeToJpeg({
+        buffer,
+        maxSide: side,
+        quality,
+        withoutEnlargement: true,
+      });
+      const size = out.length;
+      if (!smallest || size < smallest.size) {
+        smallest = { buffer: out, size, resizeSide: side, quality };
+      }
+      if (size <= maxBytes) {
+        return {
+          buffer: out,
+          optimizedSize: size,
+          resizeSide: side,
           quality,
-          withoutEnlargement: true,
-        });
-        const size = out.length;
-        if (!smallest || size < smallest.size) {
-          smallest = { buffer: out, size, resizeSide: side, quality };
-        }
-        if (size <= maxBytes) {
-          return {
-            buffer: out,
-            optimizedSize: size,
-            resizeSide: side,
-            quality,
-          };
-        }
-      } catch {
-        // Continue trying other size/quality combinations
+        };
       }
     }
   }

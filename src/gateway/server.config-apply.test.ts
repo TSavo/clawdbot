@@ -12,26 +12,25 @@ import {
 
 installGatewayTestHooks();
 
-const servers: Array<Awaited<ReturnType<typeof startServerWithClient>>> = [];
-
-afterEach(async () => {
-  for (const { server, ws } of servers) {
-    try {
-      ws.close();
-      await server.close();
-    } catch {
-      /* ignore */
-    }
-  }
-  servers.length = 0;
-  await new Promise((resolve) => setTimeout(resolve, 50));
-});
-
 describe("gateway config.apply", () => {
+  let server: Awaited<ReturnType<typeof startServerWithClient>>["server"] | null = null;
+  let ws: Awaited<ReturnType<typeof startServerWithClient>>["ws"] | null = null;
+
+  async function cleanup() {
+    if (ws) ws.close();
+    if (server) await server.close();
+    server = null;
+    ws = null;
+  }
+
+  afterEach(async () => {
+    await cleanup();
+  });
+
   it("writes config, stores sentinel, and schedules restart", async () => {
     const result = await startServerWithClient();
-    servers.push(result);
-    const { ws } = result;
+    server = result.server;
+    ws = result.ws;
     await connectOk(ws);
 
     const id = "req-1";
@@ -67,12 +66,14 @@ describe("gateway config.apply", () => {
       // File may not exist if signal delivery is mocked, verify response was ok instead
       expect(res.ok).toBe(true);
     }
+
+    await cleanup();
   });
 
   it("rejects invalid raw config", async () => {
     const result = await startServerWithClient();
-    servers.push(result);
-    const { ws } = result;
+    server = result.server;
+    ws = result.ws;
     await connectOk(ws);
 
     const id = "req-2";
@@ -91,5 +92,7 @@ describe("gateway config.apply", () => {
       (o) => o.type === "res" && o.id === id,
     );
     expect(res.ok).toBe(false);
+
+    await cleanup();
   });
 });

@@ -3,7 +3,7 @@ import { type AddressInfo, createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, expect, vi } from "vitest";
+import { afterEach, beforeEach, expect } from "vitest";
 import { WebSocket } from "ws";
 
 import { resolveMainSessionKeyFromConfig, type SessionEntry } from "../config/sessions.js";
@@ -12,7 +12,6 @@ import { drainSystemEvents, peekSystemEvents } from "../infra/system-events.js";
 import { rawDataToString } from "../infra/ws.js";
 import { resetLogger, setLoggerOverride } from "../logging.js";
 import { DEFAULT_AGENT_ID, toAgentStoreSessionKey } from "../routing/session-key.js";
-import { getDeterministicFreePortBlock } from "../test-utils/ports.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 
 import { PROTOCOL_VERSION } from "./protocol/index.js";
@@ -29,14 +28,7 @@ import {
   testTailnetIPv4,
 } from "./test-helpers.mocks.js";
 
-// Preload the gateway server module once per worker.
-// Important: `test-helpers.mocks` must run before importing the server so vi.mock hooks apply.
-const serverModulePromise = import("./server.js");
-
 let previousHome: string | undefined;
-let previousUserProfile: string | undefined;
-let previousStateDir: string | undefined;
-let previousConfigPath: string | undefined;
 let tempHome: string | undefined;
 let tempConfigRoot: string | undefined;
 
@@ -68,18 +60,10 @@ export async function writeSessionStore(params: {
 
 export function installGatewayTestHooks() {
   beforeEach(async () => {
-    // Some tests intentionally use fake timers; ensure they don't leak into gateway suites.
-    vi.useRealTimers();
     setLoggerOverride({ level: "silent", consoleLevel: "silent" });
     previousHome = process.env.HOME;
-    previousUserProfile = process.env.USERPROFILE;
-    previousStateDir = process.env.CLAWDBOT_STATE_DIR;
-    previousConfigPath = process.env.CLAWDBOT_CONFIG_PATH;
     tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-gateway-home-"));
     process.env.HOME = tempHome;
-    process.env.USERPROFILE = tempHome;
-    process.env.CLAWDBOT_STATE_DIR = path.join(tempHome, ".clawdbot");
-    delete process.env.CLAWDBOT_CONFIG_PATH;
     tempConfigRoot = path.join(tempHome, ".clawdbot-test");
     setTestConfigRoot(tempConfigRoot);
     sessionStoreSaveDelayMs.value = 0;
@@ -109,7 +93,7 @@ export function installGatewayTestHooks() {
     embeddedRunMock.waitResults.clear();
     drainSystemEvents(resolveMainSessionKeyFromConfig());
     resetAgentRunContextForTest();
-    const mod = await serverModulePromise;
+    const mod = await import("./server.js");
     mod.__resetModelCatalogCacheForTest();
     piSdkMock.enabled = false;
     piSdkMock.discoverCalls = 0;
@@ -117,16 +101,8 @@ export function installGatewayTestHooks() {
   }, 60_000);
 
   afterEach(async () => {
-    vi.useRealTimers();
     resetLogger();
-    if (previousHome === undefined) delete process.env.HOME;
-    else process.env.HOME = previousHome;
-    if (previousUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = previousUserProfile;
-    if (previousStateDir === undefined) delete process.env.CLAWDBOT_STATE_DIR;
-    else process.env.CLAWDBOT_STATE_DIR = previousStateDir;
-    if (previousConfigPath === undefined) delete process.env.CLAWDBOT_CONFIG_PATH;
-    else process.env.CLAWDBOT_CONFIG_PATH = previousConfigPath;
+    process.env.HOME = previousHome;
     if (tempHome) {
       await fs.rm(tempHome, {
         recursive: true,
@@ -140,8 +116,42 @@ export function installGatewayTestHooks() {
   });
 }
 
+let nextTestPortOffset = 0;
+
 export async function getFreePort(): Promise<number> {
-  return await getDeterministicFreePortBlock({ offsets: [0, 1, 2, 3, 4] });
+  const workerIdRaw = process.env.VITEST_WORKER_ID ?? process.env.VITEST_POOL_ID ?? "";
+  const workerId = Number.parseInt(workerIdRaw, 10);
+  const shard = Number.isFinite(workerId) ? Math.max(0, workerId) : Math.abs(process.pid);
+
+  // Avoid flaky "get a free port then bind later" races by allocating from a
+  // deterministic per-worker port range. Still probe for EADDRINUSE to avoid
+  // collisions with external processes.
+  const rangeSize = 1000;
+  const shardCount = 30;
+  const base = 30_000 + (Math.abs(shard) % shardCount) * rangeSize; // <= 59_999
+
+  for (let attempt = 0; attempt < rangeSize; attempt++) {
+    const port = base + (nextTestPortOffset++ % rangeSize);
+    // eslint-disable-next-line no-await-in-loop
+    const ok = await new Promise<boolean>((resolve) => {
+      const server = createServer();
+      server.once("error", () => resolve(false));
+      server.listen(port, "127.0.0.1", () => {
+        server.close(() => resolve(true));
+      });
+    });
+    if (ok) return port;
+  }
+
+  // Fallback: let the OS pick a port.
+  return await new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const port = (server.address() as AddressInfo).port;
+      server.close((err) => (err ? reject(err) : resolve(port)));
+    });
+  });
 }
 
 export async function occupyPort(): Promise<{
@@ -188,7 +198,7 @@ export function onceMessage<T = unknown>(
 }
 
 export async function startGatewayServer(port: number, opts?: GatewayServerOptions) {
-  const mod = await serverModulePromise;
+  const mod = await import("./server.js");
   return await mod.startGatewayServer(port, opts);
 }
 
@@ -218,7 +228,46 @@ export async function startServerWithClient(token?: string, opts?: GatewayServer
 
   const ws = new WebSocket(`ws://127.0.0.1:${port}`);
   await new Promise<void>((resolve) => ws.once("open", resolve));
+
+  // Wrap close to ensure proper cleanup
+  const originalClose = ws.close.bind(ws);
+  ws.close = function (code?: number, reason?: string) {
+    originalClose(code, reason);
+    return this;
+  };
+
   return { server, ws, port, prevToken: prev };
+}
+
+async function _closeWebSocket(ws: WebSocket, timeoutMs = 2000): Promise<void> {
+  if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+    return;
+  }
+
+  return new Promise<void>((resolve) => {
+    const timeout = setTimeout(() => {
+      resolve();
+    }, timeoutMs);
+
+    const closeHandler = () => {
+      clearTimeout(timeout);
+      ws.removeEventListener("close", closeHandler);
+      ws.removeEventListener("error", errorHandler);
+      resolve();
+    };
+
+    const errorHandler = () => {
+      clearTimeout(timeout);
+      ws.removeEventListener("close", closeHandler);
+      ws.removeEventListener("error", errorHandler);
+      resolve();
+    };
+
+    ws.addEventListener("close", closeHandler, { once: true });
+    ws.addEventListener("error", errorHandler, { once: true });
+
+    ws.close(1000, "test cleanup");
+  });
 }
 
 type ConnectResponse = {

@@ -1,0 +1,56 @@
+diff --git a/src/discord/voice/rest-api.ts b/src/discord/voice/rest-api.ts
+--- a/src/discord/voice/rest-api.ts
++++ b/src/discord/voice/rest-api.ts
+@@ -251,7 +251,7 @@ export class VoiceRestApiServer {
+       const audioData = Buffer.from(request.audio.data, 'base64');
+
+       // Create audio buffer
+-      const audioBuffer: AudioBuffer = {
++      const _audioBuffer: AudioBuffer = {
+         data: new Uint8Array(audioData),
+         format: request.audio.format,
+         sampleRate: request.audio.sampleRate,
+
+diff --git a/src/media/voice-providers/cartesia.ts b/src/media/voice-providers/cartesia.ts
+--- a/src/media/voice-providers/cartesia.ts
++++ b/src/media/voice-providers/cartesia.ts
+@@ -387,6 +387,12 @@ export class CartesiaProvider implements TTSProvider {
+
+         clearTimeout(timeoutId);
+
++        if (!response) {
++          throw new VoiceProviderError(
++            'API request failed: No response received',
++            this.id,
++            'REQUEST_FAILED',
++          );
++        }
+         if (!response.ok) {
+           let errorMessage = `HTTP ${response.status}`;
+
+diff --git a/src/media/voice-providers/chatterbox.ts b/src/media/voice-providers/chatterbox.ts
+--- a/src/media/voice-providers/chatterbox.ts
++++ b/src/media/voice-providers/chatterbox.ts
+@@ -299,7 +299,7 @@ export class ChatterboxProvider implements TTSProvider {
+           { timeout: 2000 },
+         );
+
+-        if (response.ok) {
++        if (response?.ok) {
+           return { available: true, port, endpoint: `http://localhost:${port}` };
+         }
+       } catch {
+@@ -396,6 +396,12 @@ export class ChatterboxProvider implements TTSProvider {
+
+           clearTimeout(timeoutId);
+
++          if (!response) {
++            throw new VoiceProviderError(
++              'Request failed: No response received',
++              this.id,
++              'REQUEST_FAILED',
++            );
++          }
+           if (!response.ok) {
+             if (attempt < maxRetries - 1) {
+               // Retry on non-ok responses

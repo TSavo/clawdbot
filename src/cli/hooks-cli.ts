@@ -11,8 +11,6 @@ import {
   type HookStatusEntry,
   type HookStatusReport,
 } from "../hooks/hooks-status.js";
-import type { HookEntry } from "../hooks/types.js";
-import { loadWorkspaceHookEntries } from "../hooks/workspace.js";
 import { loadConfig, writeConfigFile } from "../config/io.js";
 import {
   installHooksFromNpmSpec,
@@ -20,7 +18,6 @@ import {
   resolveHookInstallDir,
 } from "../hooks/install.js";
 import { recordHookInstall } from "../hooks/installs.js";
-import { buildPluginStatusReport } from "../plugins/status.js";
 import { defaultRuntime } from "../runtime.js";
 import { formatDocsLink } from "../terminal/links.js";
 import { theme } from "../terminal/theme.js";
@@ -45,26 +42,6 @@ export type HooksUpdateOptions = {
   dryRun?: boolean;
 };
 
-function mergeHookEntries(pluginEntries: HookEntry[], workspaceEntries: HookEntry[]): HookEntry[] {
-  const merged = new Map<string, HookEntry>();
-  for (const entry of pluginEntries) {
-    merged.set(entry.hook.name, entry);
-  }
-  for (const entry of workspaceEntries) {
-    merged.set(entry.hook.name, entry);
-  }
-  return Array.from(merged.values());
-}
-
-function buildHooksReport(config: ClawdbotConfig): HookStatusReport {
-  const workspaceDir = resolveAgentWorkspaceDir(config, resolveDefaultAgentId(config));
-  const workspaceEntries = loadWorkspaceHookEntries(workspaceDir, { config });
-  const pluginReport = buildPluginStatusReport({ config, workspaceDir });
-  const pluginEntries = pluginReport.hooks.map((hook) => hook.entry);
-  const entries = mergeHookEntries(pluginEntries, workspaceEntries);
-  return buildWorkspaceHookStatus(workspaceDir, { config, entries });
-}
-
 /**
  * Format a single hook for display in the list
  */
@@ -81,9 +58,6 @@ function formatHookLine(hook: HookStatusEntry, verbose = false): string {
   const desc = chalk.gray(
     hook.description.length > 50 ? `${hook.description.slice(0, 47)}...` : hook.description,
   );
-  const sourceLabel = hook.managedByPlugin
-    ? chalk.magenta(`plugin:${hook.pluginId ?? "unknown"}`)
-    : "";
 
   if (verbose) {
     const missing: string[] = [];
@@ -103,12 +77,10 @@ function formatHookLine(hook: HookStatusEntry, verbose = false): string {
       missing.push(`os: ${hook.missing.os.join(", ")}`);
     }
     const missingStr = missing.length > 0 ? chalk.red(` [${missing.join("; ")}]`) : "";
-    const sourceSuffix = sourceLabel ? ` ${sourceLabel}` : "";
-    return `${emoji} ${name} ${status}${missingStr}\n   ${desc}${sourceSuffix}`;
+    return `${emoji} ${name} ${status}${missingStr}\n   ${desc}`;
   }
 
-  const sourceSuffix = sourceLabel ? ` ${sourceLabel}` : "";
-  return `${emoji} ${name} ${status} - ${desc}${sourceSuffix}`;
+  return `${emoji} ${name} ${status} - ${desc}`;
 }
 
 async function readInstalledPackageVersion(dir: string): Promise<string | undefined> {
@@ -138,11 +110,9 @@ export function formatHooksList(report: HookStatusReport, opts: HooksListOptions
         eligible: h.eligible,
         disabled: h.disabled,
         source: h.source,
-        pluginId: h.pluginId,
         events: h.events,
         homepage: h.homepage,
         missing: h.missing,
-        managedByPlugin: h.managedByPlugin,
       })),
     };
     return JSON.stringify(jsonReport, null, 2);
@@ -216,11 +186,7 @@ export function formatHookInfo(
 
   // Details
   lines.push(chalk.bold("Details:"));
-  if (hook.managedByPlugin) {
-    lines.push(`  Source: ${hook.source} (${hook.pluginId ?? "unknown"})`);
-  } else {
-    lines.push(`  Source: ${hook.source}`);
-  }
+  lines.push(`  Source: ${hook.source}`);
   lines.push(`  Path: ${chalk.gray(hook.filePath)}`);
   lines.push(`  Handler: ${chalk.gray(hook.handlerPath)}`);
   if (hook.homepage) {
@@ -228,9 +194,6 @@ export function formatHookInfo(
   }
   if (hook.events.length > 0) {
     lines.push(`  Events: ${hook.events.join(", ")}`);
-  }
-  if (hook.managedByPlugin) {
-    lines.push(`  Managed by plugin; enable/disable via hooks CLI not available.`);
   }
 
   // Requirements
@@ -339,17 +302,12 @@ export function formatHooksCheck(report: HookStatusReport, opts: HooksCheckOptio
 
 export async function enableHook(hookName: string): Promise<void> {
   const config = loadConfig();
-  const report = buildHooksReport(config);
+  const workspaceDir = resolveAgentWorkspaceDir(config, resolveDefaultAgentId(config));
+  const report = buildWorkspaceHookStatus(workspaceDir, { config });
   const hook = report.hooks.find((h) => h.name === hookName);
 
   if (!hook) {
     throw new Error(`Hook "${hookName}" not found`);
-  }
-
-  if (hook.managedByPlugin) {
-    throw new Error(
-      `Hook "${hookName}" is managed by plugin "${hook.pluginId ?? "unknown"}" and cannot be enabled/disabled.`,
-    );
   }
 
   if (!hook.eligible) {
@@ -378,17 +336,12 @@ export async function enableHook(hookName: string): Promise<void> {
 
 export async function disableHook(hookName: string): Promise<void> {
   const config = loadConfig();
-  const report = buildHooksReport(config);
+  const workspaceDir = resolveAgentWorkspaceDir(config, resolveDefaultAgentId(config));
+  const report = buildWorkspaceHookStatus(workspaceDir, { config });
   const hook = report.hooks.find((h) => h.name === hookName);
 
   if (!hook) {
     throw new Error(`Hook "${hookName}" not found`);
-  }
-
-  if (hook.managedByPlugin) {
-    throw new Error(
-      `Hook "${hookName}" is managed by plugin "${hook.pluginId ?? "unknown"}" and cannot be enabled/disabled.`,
-    );
   }
 
   // Update config
@@ -429,7 +382,8 @@ export function registerHooksCli(program: Command): void {
     .action(async (opts) => {
       try {
         const config = loadConfig();
-        const report = buildHooksReport(config);
+        const workspaceDir = resolveAgentWorkspaceDir(config, resolveDefaultAgentId(config));
+        const report = buildWorkspaceHookStatus(workspaceDir, { config });
         console.log(formatHooksList(report, opts));
       } catch (err) {
         console.error(chalk.red("Error:"), err instanceof Error ? err.message : String(err));
@@ -444,7 +398,8 @@ export function registerHooksCli(program: Command): void {
     .action(async (name, opts) => {
       try {
         const config = loadConfig();
-        const report = buildHooksReport(config);
+        const workspaceDir = resolveAgentWorkspaceDir(config, resolveDefaultAgentId(config));
+        const report = buildWorkspaceHookStatus(workspaceDir, { config });
         console.log(formatHookInfo(report, name, opts));
       } catch (err) {
         console.error(chalk.red("Error:"), err instanceof Error ? err.message : String(err));
@@ -459,7 +414,8 @@ export function registerHooksCli(program: Command): void {
     .action(async (opts) => {
       try {
         const config = loadConfig();
-        const report = buildHooksReport(config);
+        const workspaceDir = resolveAgentWorkspaceDir(config, resolveDefaultAgentId(config));
+        const report = buildWorkspaceHookStatus(workspaceDir, { config });
         console.log(formatHooksCheck(report, opts));
       } catch (err) {
         console.error(chalk.red("Error:"), err instanceof Error ? err.message : String(err));
@@ -809,7 +765,8 @@ export function registerHooksCli(program: Command): void {
   hooks.action(async () => {
     try {
       const config = loadConfig();
-      const report = buildHooksReport(config);
+      const workspaceDir = resolveAgentWorkspaceDir(config, resolveDefaultAgentId(config));
+      const report = buildWorkspaceHookStatus(workspaceDir, { config });
       console.log(formatHooksList(report, {}));
     } catch (err) {
       console.error(chalk.red("Error:"), err instanceof Error ? err.message : String(err));

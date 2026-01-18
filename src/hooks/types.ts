@@ -35,14 +35,11 @@ export type ParsedHookFrontmatter = Record<string, string>;
 export type Hook = {
   name: string;
   description: string;
-  source: "clawdbot-bundled" | "clawdbot-managed" | "clawdbot-workspace" | "clawdbot-plugin";
-  pluginId?: string;
+  source: "clawdbot-bundled" | "clawdbot-managed" | "clawdbot-workspace";
   filePath: string; // Path to HOOK.md
   baseDir: string; // Directory containing hook
   handlerPath: string; // Path to handler module (handler.ts/js)
 };
-
-export type HookSource = Hook["source"];
 
 export type HookEntry = {
   hook: Hook;

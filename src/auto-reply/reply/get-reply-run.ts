@@ -10,7 +10,6 @@ import {
   isProfileInCooldown,
   resolveAuthProfileOrder,
 } from "../../agents/auth-profiles.js";
-import type { ExecToolDefaults } from "../../agents/bash-tools.js";
 import type { ClawdbotConfig } from "../../config/config.js";
 import {
   resolveSessionFilePath,
@@ -48,7 +47,6 @@ import type { TypingController } from "./typing.js";
 import { createTypingSignaler, resolveTypingMode } from "./typing-mode.js";
 
 type AgentDefaults = NonNullable<ClawdbotConfig["agents"]>["defaults"];
-type ExecOverrides = Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
 
 const BARE_SESSION_RESET_PROMPT =
   "A new session was started via /new or /reset. Say hi briefly (1-2 sentences) and ask what the user wants to do next. Do not mention internal steps, files, tools, or reasoning.";
@@ -71,7 +69,6 @@ type RunPreparedReplyParams = {
   resolvedVerboseLevel: VerboseLevel | undefined;
   resolvedReasoningLevel: ReasoningLevel;
   resolvedElevatedLevel: ElevatedLevel;
-  execOverrides?: ExecOverrides;
   elevatedEnabled: boolean;
   elevatedAllowed: boolean;
   blockStreamingEnabled: boolean;
@@ -152,13 +149,7 @@ async function resolveSessionAuthProfileOverride(params: {
   let current = sessionEntry.authProfileOverride?.trim();
   if (current && !order.includes(current)) current = undefined;
 
-  const source =
-    sessionEntry.authProfileOverrideSource ??
-    (typeof sessionEntry.authProfileOverrideCompactionCount === "number"
-      ? "auto"
-      : current
-        ? "user"
-        : undefined);
+  const source = sessionEntry.authProfileOverrideSource ?? (current ? "user" : undefined);
   if (source === "user" && current && !isNewSession) {
     return current;
   }
@@ -236,7 +227,6 @@ export async function runPreparedReply(
     resolvedVerboseLevel,
     resolvedReasoningLevel,
     resolvedElevatedLevel,
-    execOverrides,
     abortedLastRun,
   } = params;
   let currentSystemSent = systemSent;
@@ -412,7 +402,6 @@ export async function runPreparedReply(
     storePath,
     isNewSession,
   });
-  const authProfileIdSource = sessionEntry?.authProfileOverrideSource;
   const followupRun = {
     prompt: queuedBody,
     messageId: sessionCtx.MessageSid,
@@ -437,12 +426,10 @@ export async function runPreparedReply(
       provider,
       model,
       authProfileId,
-      authProfileIdSource,
       thinkLevel: resolvedThinkLevel,
       verboseLevel: resolvedVerboseLevel,
       reasoningLevel: resolvedReasoningLevel,
       elevatedLevel: resolvedElevatedLevel,
-      execOverrides,
       bashElevated: {
         enabled: elevatedEnabled,
         allowed: elevatedAllowed,

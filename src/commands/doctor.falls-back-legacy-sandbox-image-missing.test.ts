@@ -55,7 +55,6 @@ beforeEach(() => {
     killed: false,
   });
   ensureAuthProfileStore.mockReset().mockReturnValue({ version: 1, profiles: {} });
-  loadClawdbotPlugins.mockReset().mockReturnValue({ plugins: [], diagnostics: [] });
   migrateLegacyConfig.mockReset().mockImplementation((raw: unknown) => ({
     config: raw as Record<string, unknown>,
     changes: ["Moved routing.allowFrom → channels.whatsapp.allowFrom."],
@@ -132,7 +131,6 @@ const runCommandWithTimeout = vi.fn().mockResolvedValue({
 });
 
 const ensureAuthProfileStore = vi.fn().mockReturnValue({ version: 1, profiles: {} });
-const loadClawdbotPlugins = vi.fn().mockReturnValue({ plugins: [], diagnostics: [] });
 
 const legacyReadConfigFileSnapshot = vi.fn().mockResolvedValue({
   path: "/tmp/clawdbot.json",
@@ -175,8 +173,9 @@ vi.mock("../agents/skills-status.js", () => ({
 }));
 
 vi.mock("../plugins/loader.js", () => ({
-  loadClawdbotPlugins,
+  loadClawdbotPlugins: () => ({ plugins: [], diagnostics: [] }),
 }));
+
 vi.mock("../config/config.js", async (importOriginal) => {
   const actual = await importOriginal();
   return {

@@ -52,11 +52,10 @@ export function resolveGatewayLogPaths(env: Record<string, string | undefined>):
 } {
   const stateDir = resolveGatewayStateDir(env);
   const logDir = path.join(stateDir, "logs");
-  const prefix = env.CLAWDBOT_LOG_PREFIX?.trim() || "gateway";
   return {
     logDir,
-    stdoutPath: path.join(logDir, `${prefix}.log`),
-    stderrPath: path.join(logDir, `${prefix}.err.log`),
+    stdoutPath: path.join(logDir, "gateway.log"),
+    stderrPath: path.join(logDir, "gateway.err.log"),
   };
 }
 
@@ -341,14 +340,12 @@ export async function installLaunchAgent({
   programArguments,
   workingDirectory,
   environment,
-  description,
 }: {
   env: Record<string, string | undefined>;
   stdout: NodeJS.WritableStream;
   programArguments: string[];
   workingDirectory?: string;
   environment?: Record<string, string | undefined>;
-  description?: string;
 }): Promise<{ plistPath: string }> {
   const { logDir, stdoutPath, stderrPath } = resolveGatewayLogPaths(env);
   await fs.mkdir(logDir, { recursive: true });
@@ -369,15 +366,13 @@ export async function installLaunchAgent({
   const plistPath = resolveLaunchAgentPlistPathForLabel(env, label);
   await fs.mkdir(path.dirname(plistPath), { recursive: true });
 
-  const serviceDescription =
-    description ??
-    formatGatewayServiceDescription({
-      profile: env.CLAWDBOT_PROFILE,
-      version: environment?.CLAWDBOT_SERVICE_VERSION ?? env.CLAWDBOT_SERVICE_VERSION,
-    });
+  const description = formatGatewayServiceDescription({
+    profile: env.CLAWDBOT_PROFILE,
+    version: environment?.CLAWDBOT_SERVICE_VERSION ?? env.CLAWDBOT_SERVICE_VERSION,
+  });
   const plist = buildLaunchAgentPlist({
     label,
-    comment: serviceDescription,
+    comment: description,
     programArguments,
     workingDirectory,
     stdoutPath,

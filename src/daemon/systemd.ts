@@ -186,27 +186,23 @@ export async function installSystemdService({
   programArguments,
   workingDirectory,
   environment,
-  description,
 }: {
   env: Record<string, string | undefined>;
   stdout: NodeJS.WritableStream;
   programArguments: string[];
   workingDirectory?: string;
   environment?: Record<string, string | undefined>;
-  description?: string;
 }): Promise<{ unitPath: string }> {
   await assertSystemdAvailable();
 
   const unitPath = resolveSystemdUnitPath(env);
   await fs.mkdir(path.dirname(unitPath), { recursive: true });
-  const serviceDescription =
-    description ??
-    formatGatewayServiceDescription({
-      profile: env.CLAWDBOT_PROFILE,
-      version: environment?.CLAWDBOT_SERVICE_VERSION ?? env.CLAWDBOT_SERVICE_VERSION,
-    });
+  const description = formatGatewayServiceDescription({
+    profile: env.CLAWDBOT_PROFILE,
+    version: environment?.CLAWDBOT_SERVICE_VERSION ?? env.CLAWDBOT_SERVICE_VERSION,
+  });
   const unit = buildSystemdUnit({
-    description: serviceDescription,
+    description,
     programArguments,
     workingDirectory,
     environment,

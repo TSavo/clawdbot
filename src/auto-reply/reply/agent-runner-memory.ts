@@ -96,12 +96,8 @@ export async function runMemoryFlushIfNeeded(params: {
         params.followupRun.run.config,
         resolveAgentIdFromSessionKey(params.followupRun.run.sessionKey),
       ),
-      run: (provider, model) => {
-        const authProfileId =
-          provider === params.followupRun.run.provider
-            ? params.followupRun.run.authProfileId
-            : undefined;
-        return runEmbeddedPiAgent({
+      run: (provider, model) =>
+        runEmbeddedPiAgent({
           sessionId: params.followupRun.run.sessionId,
           sessionKey: params.sessionKey,
           messageProvider: params.sessionCtx.Provider?.trim().toLowerCase() || undefined,
@@ -123,14 +119,10 @@ export async function runMemoryFlushIfNeeded(params: {
           enforceFinalTag: resolveEnforceFinalTag(params.followupRun.run, provider),
           provider,
           model,
-          authProfileId,
-          authProfileIdSource: authProfileId
-            ? params.followupRun.run.authProfileIdSource
-            : undefined,
+          authProfileId: params.followupRun.run.authProfileId,
           thinkLevel: params.followupRun.run.thinkLevel,
           verboseLevel: params.followupRun.run.verboseLevel,
           reasoningLevel: params.followupRun.run.reasoningLevel,
-          execOverrides: params.followupRun.run.execOverrides,
           bashElevated: params.followupRun.run.bashElevated,
           timeoutMs: params.followupRun.run.timeoutMs,
           runId: flushRunId,
@@ -143,8 +135,7 @@ export async function runMemoryFlushIfNeeded(params: {
               }
             }
           },
-        });
-      },
+        }),
     });
     let memoryFlushCompactionCount =
       activeSessionEntry?.compactionCount ??

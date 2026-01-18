@@ -7,12 +7,6 @@ import type { RuntimeEnv } from "../runtime.js";
 import { runSecurityAudit } from "../security/audit.js";
 import { renderTable } from "../terminal/table.js";
 import { theme } from "../terminal/theme.js";
-import {
-  resolveMemoryCacheSummary,
-  resolveMemoryFtsState,
-  resolveMemoryVectorState,
-  type Tone,
-} from "../memory/status-format.js";
 import { formatHealthChannelLines, type HealthSummary } from "./health.js";
 import { resolveControlUiLinks } from "./onboard-helpers.js";
 import { getDaemonStatusSummary } from "./status.daemon.js";
@@ -71,7 +65,6 @@ export async function statusCommand(
     channels,
     summary,
     memory,
-    memoryPlugin,
   } = scan;
 
   const securityAudit = await withProgress(
@@ -123,7 +116,6 @@ export async function statusCommand(
           os: osSummary,
           update,
           memory,
-          memoryPlugin,
           gateway: {
             mode: gatewayMode,
             url: gatewayConnection.url,
@@ -243,37 +235,38 @@ export async function statusCommand(
       : (summary.sessions.paths[0] ?? "unknown");
 
   const memoryValue = (() => {
-    if (!memoryPlugin.enabled) {
-      const suffix = memoryPlugin.reason ? ` (${memoryPlugin.reason})` : "";
-      return muted(`disabled${suffix}`);
-    }
-    if (!memory) {
-      const slot = memoryPlugin.slot ? `plugin ${memoryPlugin.slot}` : "plugin";
-      return muted(`enabled (${slot}) · unavailable`);
-    }
+    if (!memory) return muted("disabled");
     const parts: string[] = [];
     const dirtySuffix = memory.dirty ? ` · ${warn("dirty")}` : "";
     parts.push(`${memory.files} files · ${memory.chunks} chunks${dirtySuffix}`);
     if (memory.sources?.length) parts.push(`sources ${memory.sources.join(", ")}`);
-    if (memoryPlugin.slot) parts.push(`plugin ${memoryPlugin.slot}`);
-    const colorByTone = (tone: Tone, text: string) =>
-      tone === "ok" ? ok(text) : tone === "warn" ? warn(text) : muted(text);
     const vector = memory.vector;
-    if (vector) {
-      const state = resolveMemoryVectorState(vector);
-      const label = state.state === "disabled" ? "vector off" : `vector ${state.state}`;
-      parts.push(colorByTone(state.tone, label));
-    }
+    parts.push(
+      vector?.enabled === false
+        ? muted("vector off")
+        : vector?.available
+          ? ok("vector ready")
+          : vector?.available === false
+            ? warn("vector unavailable")
+            : muted("vector unknown"),
+    );
     const fts = memory.fts;
     if (fts) {
-      const state = resolveMemoryFtsState(fts);
-      const label = state.state === "disabled" ? "fts off" : `fts ${state.state}`;
-      parts.push(colorByTone(state.tone, label));
+      parts.push(
+        fts.enabled === false
+          ? muted("fts off")
+          : fts.available
+            ? ok("fts ready")
+            : warn("fts unavailable"),
+      );
     }
     const cache = memory.cache;
     if (cache) {
-      const summary = resolveMemoryCacheSummary(cache);
-      parts.push(colorByTone(summary.tone, summary.text));
+      parts.push(
+        cache.enabled
+          ? ok(`cache on${typeof cache.entries === "number" ? ` (${cache.entries})` : ""}`)
+          : muted("cache off"),
+      );
     }
     return parts.join(" · ");
   })();

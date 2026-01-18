@@ -239,15 +239,11 @@ Known issue: When you send an image with ONLY a mention (no other text), WhatsAp
 ls -la ~/.clawdbot/agents/<agentId>/sessions/
 ```
 
-**Check 2:** Is the reset window too short?
+**Check 2:** Is `idleMinutes` too short?
 ```json
 {
   "session": {
-    "reset": {
-      "mode": "daily",
-      "atHour": 4,
-      "idleMinutes": 10080  // 7 days
-    }
+    "idleMinutes": 10080  // 7 days
   }
 }
 ```

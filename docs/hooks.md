@@ -14,8 +14,6 @@ Hooks are small scripts that run when something happens. There are two kinds:
 
 - **Hooks** (this page): run inside the Gateway when agent events fire, like `/new`, `/reset`, `/stop`, or lifecycle events.
 - **Webhooks**: external HTTP webhooks that let other systems trigger work in Clawdbot. See [Webhook Hooks](/automation/webhook) or use `clawdbot webhooks` for Gmail helper commands.
-  
-Hooks can also be bundled inside plugins; see [Plugins](/plugin#plugin-hooks).
 
 Common uses:
 - Save a memory snapshot when you reset a session
@@ -37,11 +35,10 @@ The hooks system allows you to:
 
 ### Bundled Hooks
 
-Clawdbot ships with three bundled hooks that are automatically discovered:
+Clawdbot ships with two bundled hooks that are automatically discovered:
 
 - **💾 session-memory**: Saves session context to your agent workspace (default `~/clawd/memory/`) when you issue `/new`
 - **📝 command-logger**: Logs all command events to `~/.clawdbot/logs/commands.log`
-- **😈 soul-evil**: Swaps injected `SOUL.md` content with `SOUL_EVIL.md` during a purge window or by random chance
 
 List available hooks:
 
@@ -511,8 +508,6 @@ clawdbot hooks enable command-logger
 Swaps injected `SOUL.md` content with `SOUL_EVIL.md` during a purge window or by random chance.
 
 **Events**: `agent:bootstrap`
-
-**Docs**: [SOUL Evil Hook](/hooks/soul-evil)
 
 **Output**: No files written; swaps happen in-memory only.
 

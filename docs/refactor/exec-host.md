@@ -29,7 +29,6 @@ read_when:
 - **Runner:** headless system service; UI app hosts a Unix socket for approvals.
 - **Node identity:** use existing `nodeId`.
 - **Socket auth:** Unix socket + token (cross-platform); split later if needed.
-- **Node host state:** `~/.clawdbot/node.json` (node id + pairing token).
 
 ## Key concepts
 ### Host
@@ -169,9 +168,9 @@ If UI missing:
 - Stored in the gateway in-memory queue (`enqueueSystemEvent`).
 
 ### Event text
-- `Exec started (node=<id>, id=<runId>)`
-- `Exec finished (node=<id>, id=<runId>, code=<code>)` + optional output tail
-- `Exec denied (node=<id>, id=<runId>, <reason>)`
+- `Exec started (host=node, node=<id>, id=<runId>)`
+- `Exec finished (exit=<code>, tail=<...>)`
+- `Exec denied (policy=<...>, reason=<...>)`
 
 ### Transport
 Option A (recommended):

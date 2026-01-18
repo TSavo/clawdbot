@@ -20,7 +20,6 @@ public enum ClawdbotNotificationDelivery: String, Codable, Sendable {
 
 public struct ClawdbotSystemRunParams: Codable, Sendable, Equatable {
     public var command: [String]
-    public var rawCommand: String?
     public var cwd: String?
     public var env: [String: String]?
     public var timeoutMs: Int?
@@ -30,7 +29,6 @@ public struct ClawdbotSystemRunParams: Codable, Sendable, Equatable {
 
     public init(
         command: [String],
-        rawCommand: String? = nil,
         cwd: String? = nil,
         env: [String: String]? = nil,
         timeoutMs: Int? = nil,
@@ -39,7 +37,6 @@ public struct ClawdbotSystemRunParams: Codable, Sendable, Equatable {
         sessionKey: String? = nil)
     {
         self.command = command
-        self.rawCommand = rawCommand
         self.cwd = cwd
         self.env = env
         self.timeoutMs = timeoutMs

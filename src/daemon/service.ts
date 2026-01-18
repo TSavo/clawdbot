@@ -33,7 +33,6 @@ export type GatewayServiceInstallArgs = {
   programArguments: string[];
   workingDirectory?: string;
   environment?: Record<string, string | undefined>;
-  description?: string;
 };
 
 export type GatewayService = {

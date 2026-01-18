@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, ImageContent } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { streamSimple } from "@mariozechner/pi-ai";
 import { createAgentSession, SessionManager, SettingsManager } from "@mariozechner/pi-coding-agent";
 
@@ -17,9 +17,10 @@ import { isSubagentSessionKey } from "../../../routing/session-key.js";
 import { resolveUserPath } from "../../../utils.js";
 import { resolveClawdbotAgentDir } from "../../agent-paths.js";
 import { resolveSessionAgentIds } from "../../agent-scope.js";
-import { makeBootstrapWarn, resolveBootstrapContextForRun } from "../../bootstrap-files.js";
+import { resolveBootstrapFilesForRun } from "../../bootstrap-files.js";
 import { resolveModelAuthMode } from "../../model-auth.js";
 import {
+  buildBootstrapContextFiles,
   isCloudCodeAssistFormatError,
   resolveBootstrapMaxChars,
   validateAnthropicTurns,
@@ -64,13 +65,10 @@ import { prepareSessionManagerForRun } from "../session-manager-init.js";
 import { buildEmbeddedSystemPrompt, createSystemPromptOverride } from "../system-prompt.js";
 import { splitSdkTools } from "../tool-split.js";
 import { formatUserTime, resolveUserTimeFormat, resolveUserTimezone } from "../../date-time.js";
-import { describeUnknownError, mapThinkingLevel } from "../utils.js";
+import { mapThinkingLevel, resolveExecToolDefaults } from "../utils.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
-import { isTimeoutError } from "../../failover-error.js";
-import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
-import { MAX_IMAGE_BYTES } from "../../../media/constants.js";
+
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
-import { detectAndLoadPromptImages } from "./images.js";
 
 export async function runEmbeddedAttempt(
   params: EmbeddedRunAttemptParams,
@@ -122,23 +120,23 @@ export async function runEmbeddedAttempt(
       workspaceDir: effectiveWorkspace,
     });
 
+    const hookAdjustedBootstrapFiles = await resolveBootstrapFilesForRun({
+      workspaceDir: effectiveWorkspace,
+      config: params.config,
+      sessionKey: params.sessionKey,
+      sessionId: params.sessionId,
+    });
     const sessionLabel = params.sessionKey ?? params.sessionId;
-    const { bootstrapFiles: hookAdjustedBootstrapFiles, contextFiles } =
-      await resolveBootstrapContextForRun({
-        workspaceDir: effectiveWorkspace,
-        config: params.config,
-        sessionKey: params.sessionKey,
-        sessionId: params.sessionId,
-        warn: makeBootstrapWarn({ sessionLabel, warn: (message) => log.warn(message) }),
-      });
+    const contextFiles = buildBootstrapContextFiles(hookAdjustedBootstrapFiles, {
+      maxChars: resolveBootstrapMaxChars(params.config),
+      warn: (message) => log.warn(`${message} (sessionKey=${sessionLabel})`),
+    });
 
     const agentDir = params.agentDir ?? resolveClawdbotAgentDir();
 
-    // Check if the model supports native image input
-    const modelHasVision = params.model.input?.includes("image") ?? false;
     const toolsRaw = createClawdbotCodingTools({
       exec: {
-        ...params.execOverrides,
+        ...resolveExecToolDefaults(params.config),
         elevated: params.bashElevated,
       },
       sandbox,
@@ -156,7 +154,6 @@ export async function runEmbeddedAttempt(
       currentThreadTs: params.currentThreadTs,
       replyToMode: params.replyToMode,
       hasRepliedRef: params.hasRepliedRef,
-      modelHasVision,
     });
     const tools = sanitizeToolsForGoogle({ tools: toolsRaw, provider: params.provider });
     logToolSchemasForGoogle({ tools, provider: params.provider });
@@ -358,38 +355,25 @@ export async function runEmbeddedAttempt(
 
       let aborted = Boolean(params.abortSignal?.aborted);
       let timedOut = false;
-      const getAbortReason = (signal: AbortSignal): unknown =>
-        "reason" in signal ? (signal as { reason?: unknown }).reason : undefined;
-      const makeTimeoutAbortReason = (): Error => {
-        const err = new Error("request timed out");
-        err.name = "TimeoutError";
-        return err;
-      };
-      const makeAbortError = (signal: AbortSignal): Error => {
-        const reason = getAbortReason(signal);
-        const err = reason ? new Error("aborted", { cause: reason }) : new Error("aborted");
-        err.name = "AbortError";
-        return err;
-      };
-      const abortRun = (isTimeout = false, reason?: unknown) => {
+      const abortRun = (isTimeout = false) => {
         aborted = true;
         if (isTimeout) timedOut = true;
-        if (isTimeout) {
-          runAbortController.abort(reason ?? makeTimeoutAbortReason());
-        } else {
-          runAbortController.abort(reason);
-        }
+        runAbortController.abort();
         void activeSession.abort();
       };
       const abortable = <T>(promise: Promise<T>): Promise<T> => {
         const signal = runAbortController.signal;
         if (signal.aborted) {
-          return Promise.reject(makeAbortError(signal));
+          const err = new Error("aborted");
+          (err as { name?: string }).name = "AbortError";
+          return Promise.reject(err);
         }
         return new Promise<T>((resolve, reject) => {
           const onAbort = () => {
+            const err = new Error("aborted");
+            (err as { name?: string }).name = "AbortError";
             signal.removeEventListener("abort", onAbort);
-            reject(makeAbortError(signal));
+            reject(err);
           };
           signal.addEventListener("abort", onAbort, { once: true });
           promise.then(
@@ -466,11 +450,7 @@ export async function runEmbeddedAttempt(
 
       let messagesSnapshot: AgentMessage[] = [];
       let sessionIdUsed = activeSession.sessionId;
-      const onAbort = () => {
-        const reason = params.abortSignal ? getAbortReason(params.abortSignal) : undefined;
-        const timeout = reason ? isTimeoutError(reason) : false;
-        abortRun(timeout, reason);
-      };
+      const onAbort = () => abortRun();
       if (params.abortSignal) {
         if (params.abortSignal.aborted) {
           onAbort();
@@ -481,40 +461,9 @@ export async function runEmbeddedAttempt(
         }
       }
 
-      // Get hook runner once for both before_agent_start and agent_end hooks
-      const hookRunner = getGlobalHookRunner();
-
       let promptError: unknown = null;
       try {
         const promptStartedAt = Date.now();
-
-        // Run before_agent_start hooks to allow plugins to inject context
-        let effectivePrompt = params.prompt;
-        if (hookRunner?.hasHooks("before_agent_start")) {
-          try {
-            const hookResult = await hookRunner.runBeforeAgentStart(
-              {
-                prompt: params.prompt,
-                messages: activeSession.messages,
-              },
-              {
-                agentId: params.sessionKey?.split(":")[0] ?? "main",
-                sessionKey: params.sessionKey,
-                workspaceDir: params.workspaceDir,
-                messageProvider: params.messageProvider ?? undefined,
-              },
-            );
-            if (hookResult?.prependContext) {
-              effectivePrompt = `${hookResult.prependContext}\n\n${params.prompt}`;
-              log.debug(
-                `hooks: prepended context to prompt (${hookResult.prependContext.length} chars)`,
-              );
-            }
-          } catch (hookErr) {
-            log.warn(`before_agent_start hook failed: ${String(hookErr)}`);
-          }
-        }
-
         log.debug(`embedded run prompt start: runId=${params.runId} sessionId=${params.sessionId}`);
 
         // Repair orphaned trailing user messages so new prompts don't violate role ordering.
@@ -534,60 +483,7 @@ export async function runEmbeddedAttempt(
         }
 
         try {
-          // Detect and load images referenced in the prompt for vision-capable models.
-          // This eliminates the need for an explicit "view" tool call by injecting
-          // images directly into the prompt when the model supports it.
-          // Also scans conversation history to enable follow-up questions about earlier images.
-          const imageResult = await detectAndLoadPromptImages({
-            prompt: effectivePrompt,
-            workspaceDir: effectiveWorkspace,
-            model: params.model,
-            existingImages: params.images,
-            historyMessages: activeSession.messages,
-            maxBytes: MAX_IMAGE_BYTES,
-            // Enforce sandbox path restrictions when sandbox is enabled
-            sandboxRoot: sandbox?.enabled ? sandbox.workspaceDir : undefined,
-          });
-
-          // Inject history images into their original message positions.
-          // This ensures the model sees images in context (e.g., "compare to the first image").
-          if (imageResult.historyImagesByIndex.size > 0) {
-            for (const [msgIndex, images] of imageResult.historyImagesByIndex) {
-              // Bounds check: ensure index is valid before accessing
-              if (msgIndex < 0 || msgIndex >= activeSession.messages.length) continue;
-              const msg = activeSession.messages[msgIndex];
-              if (msg && msg.role === "user") {
-                // Convert string content to array format if needed
-                if (typeof msg.content === "string") {
-                  msg.content = [{ type: "text", text: msg.content }];
-                }
-                if (Array.isArray(msg.content)) {
-                  // Check for existing image content to avoid duplicates across turns
-                  const existingImageData = new Set(
-                    msg.content
-                      .filter((c): c is ImageContent =>
-                        c != null && typeof c === "object" && c.type === "image" && typeof c.data === "string",
-                      )
-                      .map((c) => c.data),
-                  );
-                  for (const img of images) {
-                    // Only add if this image isn't already in the message
-                    if (!existingImageData.has(img.data)) {
-                      msg.content.push(img);
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          // Only pass images option if there are actually images to pass
-          // This avoids potential issues with models that don't expect the images parameter
-          if (imageResult.images.length > 0) {
-            await abortable(activeSession.prompt(effectivePrompt, { images: imageResult.images }));
-          } else {
-            await abortable(activeSession.prompt(effectivePrompt));
-          }
+          await abortable(activeSession.prompt(params.prompt, { images: params.images }));
         } catch (err) {
           promptError = err;
         } finally {
@@ -608,29 +504,6 @@ export async function runEmbeddedAttempt(
 
         messagesSnapshot = activeSession.messages.slice();
         sessionIdUsed = activeSession.sessionId;
-
-        // Run agent_end hooks to allow plugins to analyze the conversation
-        // This is fire-and-forget, so we don't await
-        if (hookRunner?.hasHooks("agent_end")) {
-          hookRunner
-            .runAgentEnd(
-              {
-                messages: messagesSnapshot,
-                success: !aborted && !promptError,
-                error: promptError ? describeUnknownError(promptError) : undefined,
-                durationMs: Date.now() - promptStartedAt,
-              },
-              {
-                agentId: params.sessionKey?.split(":")[0] ?? "main",
-                sessionKey: params.sessionKey,
-                workspaceDir: params.workspaceDir,
-                messageProvider: params.messageProvider ?? undefined,
-              },
-            )
-            .catch((err) => {
-              log.warn(`agent_end hook failed: ${err}`);
-            });
-        }
       } finally {
         clearTimeout(abortTimer);
         if (abortWarnTimer) clearTimeout(abortWarnTimer);

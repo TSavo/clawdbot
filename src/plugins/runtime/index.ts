@@ -18,7 +18,6 @@ import {
 import { resolveStateDir } from "../../config/paths.js";
 import { shouldLogVerbose } from "../../globals.js";
 import { getChildLogger } from "../../logging.js";
-import { normalizeLogLevel } from "../../logging/levels.js";
 import { fetchRemoteMedia } from "../../media/fetch.js";
 import { saveMediaBuffer } from "../../media/store.js";
 import { buildPairingReply } from "../../pairing/pairing-messages.js";
@@ -91,9 +90,7 @@ export function createPluginRuntime(): PluginRuntime {
     logging: {
       shouldLogVerbose,
       getChildLogger: (bindings, opts) => {
-        const logger = getChildLogger(bindings, {
-          level: opts?.level ? normalizeLogLevel(opts.level) : undefined,
-        });
+        const logger = getChildLogger(bindings, opts);
         return {
           debug: (message) => logger.debug?.(message),
           info: (message) => logger.info(message),

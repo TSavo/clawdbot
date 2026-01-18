@@ -372,8 +372,6 @@ export async function agentCommand(
               images: opts.images,
             });
           }
-          const authProfileId =
-            providerOverride === provider ? sessionEntry?.authProfileOverride : undefined;
           return runEmbeddedPiAgent({
             sessionId,
             sessionKey,
@@ -386,8 +384,7 @@ export async function agentCommand(
             images: opts.images,
             provider: providerOverride,
             model: modelOverride,
-            authProfileId,
-            authProfileIdSource: authProfileId ? sessionEntry?.authProfileOverrideSource : undefined,
+            authProfileId: sessionEntry?.authProfileOverride,
             thinkLevel: resolvedThinkLevel,
             verboseLevel: resolvedVerboseLevel,
             timeoutMs,

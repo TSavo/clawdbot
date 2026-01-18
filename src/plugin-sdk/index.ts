@@ -119,7 +119,6 @@ export {
 } from "../config/sessions.js";
 export { resolveStateDir } from "../config/paths.js";
 export { loadConfig } from "../config/config.js";
-export { optionalStringEnum, stringEnum } from "../agents/schema/typebox.js";
 export { danger } from "../globals.js";
 export { logVerbose, shouldLogVerbose } from "../globals.js";
 export { getChildLogger } from "../logging.js";
@@ -163,5 +162,3 @@ export { createMemoryGetTool, createMemorySearchTool } from "../agents/tools/mem
 export { registerMemoryCli } from "../cli/memory-cli.js";
 
 export { formatDocsLink } from "../terminal/links.js";
-export type { HookEntry } from "../hooks/types.js";
-export { registerPluginHooksFromDir } from "../hooks/plugin-hooks.js";

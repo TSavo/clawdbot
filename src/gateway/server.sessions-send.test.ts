@@ -34,6 +34,7 @@ describe("sessions_send gateway loopback", () => {
     vi.stubEnv("CLAWDBOT_GATEWAY_PORT", String(port));
 
     const server = await startGatewayServer(port);
+    servers.push(server);
     const spy = vi.mocked(agentCommand);
     spy.mockImplementation(async (opts) => {
       const params = opts as {
@@ -77,8 +78,6 @@ describe("sessions_send gateway loopback", () => {
       });
     });
 
-    servers.push(server);
-
     const tool = createClawdbotTools().find((candidate) => candidate.name === "sessions_send");
     if (!tool) throw new Error("missing sessions_send tool");
 
@@ -102,7 +101,7 @@ describe("sessions_send gateway loopback", () => {
 });
 
 describe("sessions_send label lookup", () => {
-  it("finds session by label and sends message", { timeout: 60_000 }, async () => {
+  it("finds session by label and sends message", { timeout: 15_000 }, async () => {
     const port = await getFreePort();
     vi.stubEnv("CLAWDBOT_GATEWAY_PORT", String(port));
 
@@ -168,7 +167,7 @@ describe("sessions_send label lookup", () => {
     expect(details.sessionKey).toBe("agent:main:test-labeled-session");
   });
 
-  it("returns error when label not found", { timeout: 60_000 }, async () => {
+  it("returns error when label not found", { timeout: 15_000 }, async () => {
     const port = await getFreePort();
     vi.stubEnv("CLAWDBOT_GATEWAY_PORT", String(port));
 
@@ -188,7 +187,7 @@ describe("sessions_send label lookup", () => {
     expect(details.error).toContain("No session found with label");
   });
 
-  it("returns error when neither sessionKey nor label provided", { timeout: 60_000 }, async () => {
+  it("returns error when neither sessionKey nor label provided", { timeout: 15_000 }, async () => {
     const port = await getFreePort();
     vi.stubEnv("CLAWDBOT_GATEWAY_PORT", String(port));
 

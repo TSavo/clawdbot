@@ -162,7 +162,7 @@ enum ExecApprovalsStore {
             let data = try Data(contentsOf: url)
             let decoded = try JSONDecoder().decode(ExecApprovalsFile.self, from: data)
             if decoded.version != 1 {
-                return ExecApprovalsFile(version: 1, socket: nil, defaults: nil, agents: [:])
+                return ExecApprovalsFile(version: 1, socket: decoded.socket, defaults: decoded.defaults, agents: decoded.agents)
             }
             return decoded
         } catch {
@@ -204,7 +204,7 @@ enum ExecApprovalsStore {
     }
 
     static func resolve(agentId: String?) -> ExecApprovalsResolved {
-        let file = self.ensureFile()
+        var file = self.ensureFile()
         let defaults = file.defaults ?? ExecApprovalsDefaults()
         let resolvedDefaults = ExecApprovalsResolvedDefaults(
             security: defaults.security ?? self.defaultSecurity,
@@ -397,32 +397,11 @@ struct ExecCommandResolution: Sendable {
     let executableName: String
     let cwd: String?
 
-    static func resolve(
-        command: [String],
-        rawCommand: String?,
-        cwd: String?,
-        env: [String: String]?
-    ) -> ExecCommandResolution? {
-        let trimmedRaw = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !trimmedRaw.isEmpty, let token = self.parseFirstToken(trimmedRaw) {
-            return self.resolveExecutable(rawExecutable: token, cwd: cwd, env: env)
-        }
-        return self.resolve(command: command, cwd: cwd, env: env)
-    }
-
     static func resolve(command: [String], cwd: String?, env: [String: String]?) -> ExecCommandResolution? {
         guard let raw = command.first?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return nil
         }
-        return self.resolveExecutable(rawExecutable: raw, cwd: cwd, env: env)
-    }
-
-    private static func resolveExecutable(
-        rawExecutable: String,
-        cwd: String?,
-        env: [String: String]?
-    ) -> ExecCommandResolution? {
-        let expanded = rawExecutable.hasPrefix("~") ? (rawExecutable as NSString).expandingTildeInPath : rawExecutable
+        let expanded = raw.hasPrefix("~") ? (raw as NSString).expandingTildeInPath : raw
         let hasPathSeparator = expanded.contains("/") || expanded.contains("\\")
         let resolvedPath: String? = {
             if hasPathSeparator {
@@ -438,20 +417,6 @@ struct ExecCommandResolution: Sendable {
         }()
         let name = resolvedPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? expanded
         return ExecCommandResolution(rawExecutable: expanded, resolvedPath: resolvedPath, executableName: name, cwd: cwd)
-    }
-
-    private static func parseFirstToken(_ command: String) -> String? {
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        guard let first = trimmed.first else { return nil }
-        if first == "\"" || first == "'" {
-            let rest = trimmed.dropFirst()
-            if let end = rest.firstIndex(of: first) {
-                return String(rest[..<end])
-            }
-            return String(rest)
-        }
-        return trimmed.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
     }
 
     private static func searchPaths(from env: [String: String]?) -> [String] {
@@ -473,12 +438,6 @@ enum ExecCommandFormatter {
             let escaped = trimmed.replacingOccurrences(of: "\"", with: "\\\"")
             return "\"\(escaped)\""
         }.joined(separator: " ")
-    }
-
-    static func displayString(for argv: [String], rawCommand: String?) -> String {
-        let trimmed = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !trimmed.isEmpty { return trimmed }
-        return self.displayString(for: argv)
     }
 }
 
@@ -563,7 +522,7 @@ struct ExecEventPayload: Codable, Sendable {
         guard !trimmed.isEmpty else { return nil }
         if trimmed.count <= maxChars { return trimmed }
         let suffix = trimmed.suffix(maxChars)
-        return "... (truncated) \(suffix)"
+        return "… (truncated) \(suffix)"
     }
 }
 

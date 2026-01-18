@@ -3,7 +3,6 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
-const isCI = process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true";
 
 export default defineConfig({
   resolve: {
@@ -12,10 +11,7 @@ export default defineConfig({
     },
   },
   test: {
-    testTimeout: 60_000,
-    hookTimeout: 120_000,
-    pool: "forks",
-    maxWorkers: isCI ? 3 : 4,
+    testTimeout: 20_000,
     include: [
       "src/**/*.test.ts",
       "extensions/**/*.test.ts",

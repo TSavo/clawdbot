@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import {
   connectOk,
   installGatewayTestHooks,
@@ -10,28 +10,33 @@ const loadConfigHelpers = async () => await import("../config/config.js");
 
 installGatewayTestHooks();
 
-const servers: Array<Awaited<ReturnType<typeof startServerWithClient>>> = [];
-
-afterEach(async () => {
-  for (const { server, ws } of servers) {
-    try {
-      ws.close();
-      await server.close();
-    } catch {
-      /* ignore */
-    }
-  }
-  servers.length = 0;
-  await new Promise((resolve) => setTimeout(resolve, 50));
-});
-
 describe("gateway server channels", () => {
+  let testServer: Awaited<ReturnType<typeof startServerWithClient>> | null = null;
+
+  afterEach(async () => {
+    if (testServer) {
+      if (
+        testServer.ws.readyState !== WebSocket.CLOSED &&
+        testServer.ws.readyState !== WebSocket.CLOSING
+      ) {
+        await new Promise<void>((resolve) => {
+          const timeout = setTimeout(resolve, 1000);
+          testServer!.ws.once("close", () => {
+            clearTimeout(timeout);
+            resolve();
+          });
+          testServer!.ws.close(1000, "test cleanup");
+        });
+      }
+      await testServer.server.close();
+      testServer = null;
+    }
+  });
+
   test("channels.status returns snapshot without probe", async () => {
     vi.stubEnv("TELEGRAM_BOT_TOKEN", undefined);
-    const result = await startServerWithClient();
-    servers.push(result);
-    const { ws } = result;
-    await connectOk(ws);
+    testServer = await startServerWithClient();
+    await connectOk(testServer.ws);
 
     const res = await rpcReq<{
       channels?: Record<
@@ -44,7 +49,7 @@ describe("gateway server channels", () => {
           }
         | { linked?: boolean }
       >;
-    }>(ws, "channels.status", { probe: false, timeoutMs: 2000 });
+    }>(testServer.ws, "channels.status", { probe: false, timeoutMs: 2000 });
     expect(res.ok).toBe(true);
     const telegram = res.payload?.channels?.telegram;
     const signal = res.payload?.channels?.signal;
@@ -59,14 +64,16 @@ describe("gateway server channels", () => {
   });
 
   test("channels.logout reports no session when missing", async () => {
-    const result = await startServerWithClient();
-    servers.push(result);
-    const { ws } = result;
-    await connectOk(ws);
+    testServer = await startServerWithClient();
+    await connectOk(testServer.ws);
 
-    const res = await rpcReq<{ cleared?: boolean; channel?: string }>(ws, "channels.logout", {
-      channel: "whatsapp",
-    });
+    const res = await rpcReq<{ cleared?: boolean; channel?: string }>(
+      testServer.ws,
+      "channels.logout",
+      {
+        channel: "whatsapp",
+      },
+    );
     expect(res.ok).toBe(true);
     expect(res.payload?.channel).toBe("whatsapp");
     expect(res.payload?.cleared).toBe(false);
@@ -84,16 +91,14 @@ describe("gateway server channels", () => {
       },
     });
 
-    const result = await startServerWithClient();
-    servers.push(result);
-    const { ws } = result;
-    await connectOk(ws);
+    testServer = await startServerWithClient();
+    await connectOk(testServer.ws);
 
     const res = await rpcReq<{
       cleared?: boolean;
       envToken?: boolean;
       channel?: string;
-    }>(ws, "channels.logout", { channel: "telegram" });
+    }>(testServer.ws, "channels.logout", { channel: "telegram" });
     expect(res.ok).toBe(true);
     expect(res.payload?.channel).toBe("telegram");
     expect(res.payload?.cleared).toBe(true);

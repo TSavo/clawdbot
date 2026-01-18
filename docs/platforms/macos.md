@@ -54,32 +54,29 @@ The macOS app presents itself as a node. Common commands:
 
 The node reports a `permissions` map so agents can decide what’s allowed.
 
-## Exec approvals (system.run)
+## Node run policy + allowlist
 
-`system.run` is controlled by **Exec approvals** in the macOS app (Settings → Exec approvals).
-Security + ask + allowlist are stored locally on the Mac in:
+`system.run` is controlled by the macOS app **Node Run Commands** policy:
+
+- `Always Ask`: prompt per command (default).
+- `Always Allow`: run without prompts.
+- `Never`: disable `system.run` (tool not advertised).
+
+The policy + allowlist live on the Mac in:
 
 ```
-~/.clawdbot/exec-approvals.json
+~/.clawdbot/macos-node.json
 ```
 
-Example:
+Schema:
 
 ```json
 {
-  "version": 1,
-  "defaults": {
-    "security": "deny",
-    "ask": "on-miss"
-  },
-  "agents": {
-    "main": {
-      "security": "allowlist",
-      "ask": "on-miss",
-      "allowlist": [
-        { "pattern": "/opt/homebrew/bin/rg" }
-      ]
-    }
+  "systemRun": {
+    "policy": "ask",
+    "allowlist": [
+      "[\"/bin/echo\",\"hello\"]"
+    ]
   }
 }
 ```

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { buildHistoryContextFromEntries, type HistoryEntry } from "../auto-reply/reply/history.js";
 import { createDefaultDeps } from "../cli/deps.js";
 import { agentCommand } from "../commands/agent.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
@@ -18,7 +17,6 @@ type OpenAiHttpOptions = {
 type OpenAiChatMessage = {
   role?: unknown;
   content?: unknown;
-  name?: unknown;
 };
 
 type OpenAiChatCompletionRequest = {
@@ -87,69 +85,24 @@ function buildAgentPrompt(messagesUnknown: unknown): {
   const messages = asMessages(messagesUnknown);
 
   const systemParts: string[] = [];
-  const conversationEntries: Array<{ role: "user" | "assistant" | "tool"; entry: HistoryEntry }> =
-    [];
+  let lastUser = "";
 
   for (const msg of messages) {
     if (!msg || typeof msg !== "object") continue;
     const role = typeof msg.role === "string" ? msg.role.trim() : "";
     const content = extractTextContent(msg.content).trim();
     if (!role || !content) continue;
-    if (role === "system" || role === "developer") {
+    if (role === "system") {
       systemParts.push(content);
       continue;
     }
-
-    const normalizedRole = role === "function" ? "tool" : role;
-    if (normalizedRole !== "user" && normalizedRole !== "assistant" && normalizedRole !== "tool") {
-      continue;
-    }
-
-    const name = typeof msg.name === "string" ? msg.name.trim() : "";
-    const sender =
-      normalizedRole === "assistant"
-        ? "Assistant"
-        : normalizedRole === "user"
-          ? "User"
-          : name
-            ? `Tool:${name}`
-            : "Tool";
-
-    conversationEntries.push({
-      role: normalizedRole,
-      entry: { sender, body: content },
-    });
-  }
-
-  let message = "";
-  if (conversationEntries.length > 0) {
-    let currentIndex = -1;
-    for (let i = conversationEntries.length - 1; i >= 0; i -= 1) {
-      const entryRole = conversationEntries[i]?.role;
-      if (entryRole === "user" || entryRole === "tool") {
-        currentIndex = i;
-        break;
-      }
-    }
-    if (currentIndex < 0) currentIndex = conversationEntries.length - 1;
-    const currentEntry = conversationEntries[currentIndex]?.entry;
-    if (currentEntry) {
-      const historyEntries = conversationEntries.slice(0, currentIndex).map((entry) => entry.entry);
-      if (historyEntries.length === 0) {
-        message = currentEntry.body;
-      } else {
-        const formatEntry = (entry: HistoryEntry) => `${entry.sender}: ${entry.body}`;
-        message = buildHistoryContextFromEntries({
-          entries: [...historyEntries, currentEntry],
-          currentMessage: formatEntry(currentEntry),
-          formatEntry,
-        });
-      }
+    if (role === "user") {
+      lastUser = content;
     }
   }
 
   return {
-    message,
+    message: lastUser,
     extraSystemPrompt: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
   };
 }
