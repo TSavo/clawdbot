@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   connectOk,
@@ -13,12 +13,28 @@ import {
 installGatewayTestHooks();
 
 describe("gateway config.apply", () => {
+  let server: Awaited<ReturnType<typeof startServerWithClient>>["server"] | null = null;
+  let ws: Awaited<ReturnType<typeof startServerWithClient>>["ws"] | null = null;
+
+  async function cleanup() {
+    if (ws) ws.close();
+    if (server) await server.close();
+    server = null;
+    ws = null;
+  }
+
+  afterEach(async () => {
+    await cleanup();
+  });
+
   it("writes config, stores sentinel, and schedules restart", async () => {
     vi.useFakeTimers();
     const sigusr1 = vi.fn();
     process.on("SIGUSR1", sigusr1);
 
-    const { server, ws } = await startServerWithClient();
+    const result = await startServerWithClient();
+    server = result.server;
+    ws = result.ws;
     await connectOk(ws);
 
     const id = "req-1";
@@ -48,14 +64,15 @@ describe("gateway config.apply", () => {
     const parsed = JSON.parse(raw) as { payload?: { kind?: string } };
     expect(parsed.payload?.kind).toBe("config-apply");
 
-    ws.close();
-    await server.close();
     process.off("SIGUSR1", sigusr1);
     vi.useRealTimers();
+    await cleanup();
   });
 
   it("rejects invalid raw config", async () => {
-    const { server, ws } = await startServerWithClient();
+    const result = await startServerWithClient();
+    server = result.server;
+    ws = result.ws;
     await connectOk(ws);
 
     const id = "req-2";
@@ -75,7 +92,6 @@ describe("gateway config.apply", () => {
     );
     expect(res.ok).toBe(false);
 
-    ws.close();
-    await server.close();
+    await cleanup();
   });
 });
